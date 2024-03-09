@@ -97,7 +97,7 @@ int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
 
-    pid_t originalPid=getpid();
+    pid_t originalPid = getpid();
     pid_t authManagerPid, monitorEnginePid;
     // Setup log file
     setupLogFile();
@@ -123,10 +123,10 @@ int main(int argc, char *argv[])
         error("Not able to create Authorization Requests Manager");
     if (pid == 0)
     {
-        authManagerPid=getpid();
+        authManagerPid = getpid();
         // Authorization Requests Manager
         writeToLog("AUTHORIZATION REQUESTS MANAGER CREATED");
-        //authorizationRequestsManager();
+        // authorizationRequestsManager();
     }
     else
     {
@@ -136,10 +136,10 @@ int main(int argc, char *argv[])
             error("Not able to create Monitor Engine");
         if (pid == 0)
         {
-            monitorEnginePid=getpid();
+            monitorEnginePid = getpid();
             // Monitor Engine
             writeToLog("MONITOR ENGINE CREATED");
-            //monitorEngine();
+            // monitorEngine();
         }
     }
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
