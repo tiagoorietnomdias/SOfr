@@ -97,9 +97,9 @@ int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
 
-    pid_t originalPid = getpid();
-    pid_t authManagerPid, monitorEnginePid;
-    // Setup log file
+    // pid_t originalPid = getpid();
+    // pid_t authManagerPid, monitorEnginePid;
+    //  Setup log file
     setupLogFile();
     if (argc != 2)
     {
@@ -120,11 +120,11 @@ int main(int argc, char *argv[])
     // Create Authorization Requests Manager
     pid_t pid = fork();
     if (pid == -1)
-        error("Not able to create Authorization Requests Manager");
+        errorHandler("Not able to create Authorization Requests Manager");
     if (pid == 0)
     {
-        authManagerPid = getpid();
-        // Authorization Requests Manager
+        // authManagerPid = getpid();
+        //  Authorization Requests Manager
         writeToLog("AUTHORIZATION REQUESTS MANAGER CREATED");
         // authorizationRequestsManager();
     }
@@ -133,11 +133,11 @@ int main(int argc, char *argv[])
         // Create Monitor Engine
         pid = fork();
         if (pid == -1)
-            error("Not able to create Monitor Engine");
+            errorHandler("Not able to create Monitor Engine");
         if (pid == 0)
         {
-            monitorEnginePid = getpid();
-            // Monitor Engine
+            // monitorEnginePid = getpid();
+            //  Monitor Engine
             writeToLog("MONITOR ENGINE CREATED");
             // monitorEngine();
         }
