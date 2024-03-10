@@ -16,16 +16,28 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 #include <stdlib.h>
 #include <string.h>
 #include <semaphore.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <sys/fcntl.h>
 #include <time.h>
+#include <sys/wait.h>
 FILE *configFile, *logFile;
 int config[5];
 int queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
 sem_t *logSem;
-
+pthread_t senderThread, receiverThread;
+void writeToLog(char *message)
+{
+    time_t now = time(NULL);
+    struct tm *date_time = localtime(&now);
+    sem_wait(logSem);
+    printf("%02d:%02d:%02d %s\n", date_time->tm_hour, date_time->tm_min, date_time->tm_sec, message);
+    fprintf(logFile, "%4d/%02d/%02d %02d:%02d:%02d %s\n", date_time->tm_year + 1900, date_time->tm_mon + 1, date_time->tm_mday, date_time->tm_hour, date_time->tm_min, date_time->tm_sec, message);
+    fflush(logFile);
+    sem_post(logSem);
+}
 void errorHandler(char *errorMessage)
 {
     printf("Error: %s\n", errorMessage);
@@ -34,6 +46,13 @@ void errorHandler(char *errorMessage)
     {
         fclose(configFile);
     }
+    pthread_cancel(senderThread);
+    pthread_cancel(receiverThread);
+    pthread_join(senderThread, NULL);
+    pthread_join(receiverThread, NULL);
+
+    writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
+    fclose(logFile);
     sem_close(logSem);
     sem_unlink("LOG_SEM");
     exit(1);
@@ -50,16 +69,6 @@ void setupLogFile()
     {
         errorHandler("ERROR: Not possible to create log semaphore\n");
     }
-}
-void writeToLog(char *message)
-{
-    time_t now = time(NULL);
-    struct tm *date_time = localtime(&now);
-    sem_wait(logSem);
-    printf("%02d:%02d:%02d %s\n", date_time->tm_hour, date_time->tm_min, date_time->tm_sec, message);
-    fprintf(logFile, "%4d/%02d/%02d %02d:%02d:%02d %s\n", date_time->tm_year + 1900, date_time->tm_mon + 1, date_time->tm_mday, date_time->tm_hour, date_time->tm_min, date_time->tm_sec, message);
-    fflush(logFile);
-    sem_post(logSem);
 }
 
 void readConfigFile(char *fileName)
@@ -92,13 +101,39 @@ void readConfigFile(char *fileName)
     fclose(configFile);
     configFile = NULL;
 }
-
+// authorizationRequestsManager: cria threads Sender e Receiver
+void *senderFunction()
+{
+    pthread_exit(NULL);
+}
+void *receiverFunction()
+{
+    pthread_exit(NULL);
+}
+void authorizationRequestsManager()
+{
+    // Create Sender
+    if (pthread_create(&senderThread, NULL, senderFunction, NULL) != 0)
+    {
+        errorHandler("Not able to create thread sender");
+    }
+    // Create receiver
+    if (pthread_create(&receiverThread, NULL, receiverFunction, NULL) != 0)
+    {
+        errorHandler("Not able to create thread receiver");
+    }
+}
+void monitorEngine()
+{
+    //exit(0);
+}
 int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
 
     // pid_t originalPid = getpid();
-    // pid_t authManagerPid, monitorEnginePid;
+    pid_t authManagerPid, monitorEnginePid;
+    pid_t parentPid = getpid();
     //  Setup log file
     setupLogFile();
     if (argc != 2)
@@ -123,25 +158,30 @@ int main(int argc, char *argv[])
         errorHandler("Not able to create Authorization Requests Manager");
     if (pid == 0)
     {
-        // authManagerPid = getpid();
+        authManagerPid = getpid();
         //  Authorization Requests Manager
         writeToLog("AUTHORIZATION REQUESTS MANAGER CREATED");
-        // authorizationRequestsManager();
+        authorizationRequestsManager();
     }
-    else
+    // Create Monitor Engine
+    if (getpid() == parentPid)
     {
-        // Create Monitor Engine
         pid = fork();
         if (pid == -1)
             errorHandler("Not able to create Monitor Engine");
-        if (pid == 0)
+        if (pid == 0 && getpid() != parentPid && getpid() != authManagerPid)
         {
-            // monitorEnginePid = getpid();
+            monitorEnginePid = getpid();
             //  Monitor Engine
             writeToLog("MONITOR ENGINE CREATED");
-            // monitorEngine();
+            monitorEngine();
         }
     }
+    
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
+    // wait for auth manager
+    waitpid(authManagerPid, NULL, 0);
+    // wait for monitor engine
+    waitpid(monitorEnginePid, NULL, 0);
     return 0;
 }
