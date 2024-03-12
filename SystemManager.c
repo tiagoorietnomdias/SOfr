@@ -12,6 +12,7 @@ MAX_VIDEO_WAIT -(>=1) tempo máximo (em ms) que os pedidos de autorização do s
 aguardar para serem executados (>=1)
 MAX_OTHERS_WAIT (>=1)- tempo máximo (em ms) que os pedidos de autorização dos serviços de música e
 de redes sociais, bem como os comandos podem aguardar para serem executados (>=1)*/
+#define _XOPEN_SOURCE 700
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,8 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 #include <sys/fcntl.h>
 #include <time.h>
 #include <sys/wait.h>
+#include <signal.h>
+
 FILE *configFile, *logFile;
 int config[5];
 int queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
@@ -56,6 +59,30 @@ void errorHandler(char *errorMessage)
     sem_close(logSem);
     sem_unlink("LOG_SEM");
     exit(1);
+}
+void handleSigInt(int sig)
+{
+    if (getpid() == 0)
+    {
+        return;
+    }
+    writeToLog("SIGINT received");
+    if (configFile != NULL)
+    {
+        fclose(configFile);
+    }
+    // close(authorizationRequestsManager);
+    // close(monitorEngine);
+
+    pthread_cancel(senderThread);
+    pthread_cancel(receiverThread);
+    pthread_join(senderThread, NULL);
+    pthread_join(receiverThread, NULL);
+    writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
+    fclose(logFile);
+    sem_close(logSem);
+    sem_unlink("LOG_SEM");
+    exit(0);
 }
 void setupLogFile()
 {
@@ -122,17 +149,26 @@ void authorizationRequestsManager()
     {
         errorHandler("Not able to create thread receiver");
     }
+    pause();
 }
 void monitorEngine()
 {
-    //exit(0);
+    pause();
+    // exit(0);
 }
 int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
 
+    // Initialize the signal handler
+    struct sigaction ctrlc;
+    ctrlc.sa_handler = handleSigInt;
+    sigfillset(&ctrlc.sa_mask);
+    ctrlc.sa_flags = 0;
+    sigaction(SIGINT, &ctrlc, NULL);
+
     // pid_t originalPid = getpid();
-    pid_t authManagerPid, monitorEnginePid;
+    // pid_t authManagerPid, monitorEnginePid;
     pid_t parentPid = getpid();
     //  Setup log file
     setupLogFile();
@@ -158,8 +194,8 @@ int main(int argc, char *argv[])
         errorHandler("Not able to create Authorization Requests Manager");
     if (pid == 0)
     {
-        authManagerPid = getpid();
-        //  Authorization Requests Manager
+        // authManagerPid = getpid();
+        //   Authorization Requests Manager
         writeToLog("AUTHORIZATION REQUESTS MANAGER CREATED");
         authorizationRequestsManager();
     }
@@ -169,19 +205,15 @@ int main(int argc, char *argv[])
         pid = fork();
         if (pid == -1)
             errorHandler("Not able to create Monitor Engine");
-        if (pid == 0 && getpid() != parentPid && getpid() != authManagerPid)
+        if (pid == 0 && getpid() != parentPid) //&& getpid() != authManagerPid
         {
-            monitorEnginePid = getpid();
-            //  Monitor Engine
+            // monitorEnginePid = getpid();
+            //   Monitor Engine
             writeToLog("MONITOR ENGINE CREATED");
             monitorEngine();
         }
     }
-    
-    writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
-    // wait for auth manager
-    waitpid(authManagerPid, NULL, 0);
-    // wait for monitor engine
-    waitpid(monitorEnginePid, NULL, 0);
+
+    pause();
     return 0;
 }
