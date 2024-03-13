@@ -25,12 +25,14 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 #include <time.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include "structs.h"
 
 FILE *configFile, *logFile;
 int config[5];
 int queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
 sem_t *logSem;
 pthread_t senderThread, receiverThread;
+sharedMemory *shm;
 void writeToLog(char *message)
 {
     time_t now = time(NULL);
@@ -156,6 +158,19 @@ void monitorEngine()
     pause();
     // exit(0);
 }
+void initializeSharedMemory()
+{
+    int shmid = shmget(IPC_PRIVATE, sizeof(sharedMemory), IPC_CREAT | 0700);
+    if (shmid == -1)
+    {
+        errorHandler("Not able to create shared memory");
+    }
+    shm = (sharedMemory *)shmat(shmid, NULL, 0);
+    if (shm == (void *)-1)
+    {
+        errorHandler("Not able to attach shared memory");
+    }
+}
 int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
@@ -188,6 +203,9 @@ int main(int argc, char *argv[])
     max_video_wait = config[3];
     max_others_wait = config[4];
     writeToLog("5G_AUTH_PLATFORM SIMULATOR STARTING");
+
+    // Initialize shared memory
+    initializeSharedMemory();
     // Create Authorization Requests Manager
     pid_t pid = fork();
     if (pid == -1)
