@@ -32,6 +32,7 @@ int config[5];
 int queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
 sem_t *logSem;
 pthread_t senderThread, receiverThread;
+int shmid;
 sharedMemory *shm;
 void writeToLog(char *message)
 {
@@ -55,6 +56,9 @@ void errorHandler(char *errorMessage)
     pthread_cancel(receiverThread);
     pthread_join(senderThread, NULL);
     pthread_join(receiverThread, NULL);
+
+    shmdt(shm);
+    shmctl(shmid, IPC_RMID, NULL);
 
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
     fclose(logFile);
@@ -160,7 +164,8 @@ void monitorEngine()
 }
 void initializeSharedMemory()
 {
-    int shmid = shmget(IPC_PRIVATE, sizeof(sharedMemory), IPC_CREAT | 0700);
+    
+    shmid = shmget(IPC_PRIVATE, sizeof(sharedMemory), IPC_CREAT | 0700);
     if (shmid == -1)
     {
         errorHandler("Not able to create shared memory");
