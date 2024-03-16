@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Werror
 
-all: 5g_auth_platform mobile_user
+all: 5g_auth_platform mobile_user backoffice_user
 
 5g_auth_platform: SystemManager.c
 	$(CC) $(CFLAGS) -o 5g_auth_platform SystemManager.c -lpthread
@@ -9,5 +9,8 @@ all: 5g_auth_platform mobile_user
 mobile_user: MobileUser.c
 	$(CC) $(CFLAGS) -o mobile_user MobileUser.c
 
+backoffice_user: BackofficeUser.c
+	$(CC) $(CFLAGS) -o backoffice_user BackofficeUser.c
+
 clean:
-	rm -f 5g_auth_platform mobile_user
+	rm -f 5g_auth_platform mobile_user backoffice_user
