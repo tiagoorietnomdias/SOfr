@@ -4,6 +4,7 @@
 // ● Escreve no log file;
 //  Captura o sinal SIGINT para terminar o programa, libertando antes todos os recursos.
 /*O ficheiro de configurações deverá seguir a seguinte estrutura:
+MOBILE USERS (>=1) - número de Mobile Users que podem ser lançados
 QUEUE_POS(>=0) - número de slots nas filas que são utilizadas para armazenar os pedidos de autorização
 e os comandos dos utilizadores
 AUTH_SERVERS_MAX  (>=1)- número máximo de Authorization Engines que podem ser lançados
@@ -29,7 +30,7 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 
 FILE *configFile, *logFile;
 int config[5];
-int queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
+int mobile_users, queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
 sem_t *logSem;
 pthread_t senderThread, receiverThread;
 int shmid;
@@ -115,7 +116,7 @@ void readConfigFile(char *fileName)
 
     char line[30];
     int i;
-    for (i = 0; i < 5; i++)
+    for (i = 0; i < 6; i++)
     {
         fgets(line, 30, configFile);
         if ((sscanf(line, "%d", &config[i]) != 1))
@@ -126,9 +127,9 @@ void readConfigFile(char *fileName)
         {
             errorHandler("Config file values must be positive");
         }
-        else if ((i == 1 || i == 3 || i == 4) && config[i] < 1)
+        else if ((i == 0 || i == 1 || i == 3 || i == 4) && config[i] < 1)
         {
-            errorHandler("AUTH_SERVERS_MAX, MAX_VIDEO_WAIT and MAX_OTHERS_WAIT >=1");
+            errorHandler("MOBILE USERS, AUTH_SERVERS_MAX, MAX_VIDEO_WAIT and MAX_OTHERS_WAIT >=1");
         }
     }
     fclose(configFile);
@@ -164,7 +165,7 @@ void monitorEngine()
 }
 void initializeSharedMemory()
 {
-    
+
     shmid = shmget(IPC_PRIVATE, sizeof(sharedMemory), IPC_CREAT | 0700);
     if (shmid == -1)
     {
@@ -202,11 +203,12 @@ int main(int argc, char *argv[])
     readConfigFile(argv[1]);
 
     // Initialize config file variables
-    queue_pos = config[0];
-    auth_servers_max = config[1];
-    auth_proc_time = config[2];
-    max_video_wait = config[3];
-    max_others_wait = config[4];
+    mobile_users = config[0];
+    queue_pos = config[1];
+    auth_servers_max = config[2];
+    auth_proc_time = config[3];
+    max_video_wait = config[4];
+    max_others_wait = config[5];
     writeToLog("5G_AUTH_PLATFORM SIMULATOR STARTING");
 
     // Initialize shared memory
