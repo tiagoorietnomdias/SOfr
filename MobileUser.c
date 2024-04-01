@@ -51,6 +51,11 @@ int main(int argc, char *argv[])
     int intervalMusic = atoi(argv[4]);
     int intervalSocial = atoi(argv[5]);
     int dataToReserve = atoi(argv[6]);
+    if (initialPlafond < 0 || n_reqs < 0 || intervalVideo < 0 || intervalMusic < 0 || intervalSocial < 0 || dataToReserve < 0)
+    {
+        printf("Usage: all arguments must be >0\n");
+        exit(1);
+    }
 
     printf("Initial plafond: %d\n", initialPlafond);
     printf("Number of requests: %d\n", n_reqs);
@@ -60,5 +65,5 @@ int main(int argc, char *argv[])
     printf("Data to reserve: %d\n", dataToReserve);
 
     // info to send to named pipe
-    //char info[100]=ID+initialPLafond;
+    // char info[100]=ID+initialPLafond;
 }
