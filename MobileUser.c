@@ -35,8 +35,21 @@ Sempre que o Mobile User termina, o processo deve limpar todos os recursos*/
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
+void handleSigInt(int sig)
+{
+    printf("Received SIGINT\n");
+    exit(0);
+}
 int main(int argc, char *argv[])
 {
+
+    struct sigaction ctrlc;
+    ctrlc.sa_handler = handleSigInt;
+    sigfillset(&ctrlc.sa_mask);
+    ctrlc.sa_flags = 0;
+    sigaction(SIGINT, &ctrlc, NULL);
     // Receive initial arguments:plafond inicial,número de pedidos de autorização,intervalo VIDEO,intervalo MUSIC,intervalo SOCIAL,dados a reservar
     if (argc != 7)
     {
@@ -66,4 +79,5 @@ int main(int argc, char *argv[])
 
     // info to send to named pipe
     // char info[100]=ID+initialPLafond;
+    pause();
 }

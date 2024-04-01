@@ -31,7 +31,7 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 FILE *configFile, *logFile;
 int config[5];
 int mobile_users, queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
-sem_t *logSem;
+sem_t *logSem, *shmSem;
 pthread_t senderThread, receiverThread;
 int shmid;
 sharedMemory *shm;
@@ -88,7 +88,9 @@ void handleSigInt(int sig)
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
     fclose(logFile);
     sem_close(logSem);
+    sem_close(shmSem);
     sem_unlink("LOG_SEM");
+    sem_unlink("SHM_SEM");
     exit(0);
 }
 void setupLogFile()
@@ -135,6 +137,17 @@ void readConfigFile(char *fileName)
     fclose(configFile);
     configFile = NULL;
 }
+// syncCreator: cria os semáforos
+void syncCreator()
+{
+    // Semaforo para a memoria partilhada
+    shmSem = sem_open("SHM_SEM", O_CREAT | O_EXCL, 0700, 1);
+    if (shmSem == SEM_FAILED)
+    {
+        errorHandler("ERROR: Not possible to create shared memory semaphore\n");
+    }
+}
+
 // authorizationRequestsManager: cria threads Sender e Receiver
 void *senderFunction()
 {
@@ -146,6 +159,7 @@ void *receiverFunction()
 }
 void authorizationRequestsManager()
 {
+
     // Create Sender
     if (pthread_create(&senderThread, NULL, senderFunction, NULL) != 0)
     {
@@ -189,7 +203,7 @@ int main(int argc, char *argv[])
 
     // pid_t originalPid = getpid();
     // pid_t authManagerPid, monitorEnginePid;
-    pid_t parentPid = getpid();
+    // pid_t parentPid = getpid();
     //  Setup log file
     setupLogFile();
     if (argc != 2)
@@ -209,7 +223,8 @@ int main(int argc, char *argv[])
     max_video_wait = config[4];
     max_others_wait = config[5];
     writeToLog("5G_AUTH_PLATFORM SIMULATOR STARTING");
-
+    // Semaphore creation function
+    syncCreator();
     // Initialize shared memory
     initializeSharedMemory();
     // Create Authorization Requests Manager
@@ -218,24 +233,26 @@ int main(int argc, char *argv[])
         errorHandler("Not able to create Authorization Requests Manager");
     if (pid == 0)
     {
+        signal(SIGINT, SIG_IGN);
         // authManagerPid = getpid();
         //   Authorization Requests Manager
         writeToLog("AUTHORIZATION REQUESTS MANAGER CREATED");
         authorizationRequestsManager();
+        exit(0);
     }
     // Create Monitor Engine
-    if (getpid() == parentPid)
+
+    pid = fork();
+    if (pid == -1)
+        errorHandler("Not able to create Monitor Engine");
+    if (pid == 0) //&& getpid() != authManagerPid
     {
-        pid = fork();
-        if (pid == -1)
-            errorHandler("Not able to create Monitor Engine");
-        if (pid == 0 && getpid() != parentPid) //&& getpid() != authManagerPid
-        {
-            // monitorEnginePid = getpid();
-            //   Monitor Engine
-            writeToLog("MONITOR ENGINE CREATED");
-            monitorEngine();
-        }
+        signal(SIGINT, SIG_IGN);
+        // monitorEnginePid = getpid();
+        //   Monitor Engine
+        writeToLog("MONITOR ENGINE CREATED");
+        monitorEngine();
+        exit(0);
     }
 
     pause();
