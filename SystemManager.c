@@ -180,7 +180,6 @@ void initializeSharedMemory()
 int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
-
     // Initialize the signal handler
     struct sigaction ctrlc;
     ctrlc.sa_handler = handleSigInt;

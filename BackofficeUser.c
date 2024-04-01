@@ -19,6 +19,46 @@ O processo termina ao receber um sinal SIGINT, ou em caso de erro. Um erro pode 
 parâmetro estiver errado ou ao tentar escrever para o named pipe e a escrita falhar, casos em que
 deverá escrever a mensagem de erro no ecrã. Sempre que termina, o processo deve limpar todos os
 recursos*/
+#include <stdio.h>
+#include <signal.h>
+#include <string.h>
+#include <stdlib.h>
+
+void handleSigInt(int sig)
+{
+    printf("Received SIGINT\n");
+    exit(0);
+}
 int main()
 {
+
+    struct sigaction ctrlc;
+    ctrlc.sa_handler = handleSigInt;
+    sigfillset(&ctrlc.sa_mask);
+    ctrlc.sa_flags = 0;
+    sigaction(SIGINT, &ctrlc, NULL);
+    while (1)
+    {
+        char command[100];
+        // Receber comandos do utilizador
+        if (scanf("%s", command) == 1)
+        {
+            if (strcmp(command, "data_stats") == 0)
+            {
+                printf("printing data stats\n");
+            }
+            else if (strcmp(command, "reset") == 0)
+            {
+                printf("resetting\n");
+            }
+            else if (strcmp(command, "exit") == 0)
+            {
+                break;
+            }
+            else
+            {
+                printf("Invalid command\n");
+            }
+        }
+    }
 }
