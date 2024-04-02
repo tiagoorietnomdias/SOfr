@@ -64,7 +64,9 @@ void errorHandler(char *errorMessage)
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
     fclose(logFile);
     sem_close(logSem);
+    sem_close(shmSem);
     sem_unlink("LOG_SEM");
+    sem_unlink("SHM_SEM");
     exit(1);
 }
 void handleSigInt(int sig)
@@ -91,6 +93,8 @@ void handleSigInt(int sig)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    shmdt(shm);
+    shmctl(shmid, IPC_RMID, NULL);
     exit(0);
 }
 void setupLogFile()
@@ -194,6 +198,8 @@ void initializeSharedMemory()
 int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
+    sem_unlink("SHM_SEM");
+
     // Initialize the signal handler
     struct sigaction ctrlc;
     ctrlc.sa_handler = handleSigInt;
