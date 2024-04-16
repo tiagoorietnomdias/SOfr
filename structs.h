@@ -1,4 +1,3 @@
-#define NUM_USERS 10
 typedef struct music
 {
     float usedPlafond;
@@ -15,10 +14,15 @@ typedef struct video
     int authReqNumber;
 } video;
 typedef struct sharedMemory
-{
+{ /// adicionar estrutura com estatisticas para monitor engine
+    int userID;
     float currentPlafond;
     music musicUsed;
     social socialUsed;
     video videoUsed;
 
 } sharedMemory;
+// pedidos, megas e..
+
+
+//Estruturaa de mensagem para pôr nas mqueues

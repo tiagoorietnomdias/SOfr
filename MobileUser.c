@@ -35,8 +35,19 @@ Sempre que o Mobile User termina, o processo deve limpar todos os recursos*/
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <semaphore.h>
+#include <pthread.h>
 #include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/fcntl.h>
+#include <time.h>
+#include <sys/wait.h>
 #include <signal.h>
+#include <sys/stat.h>
+#define _XOPEN_SOURCE 700
+
 void handleSigInt(int sig)
 {
     printf("Received SIGINT\n");
@@ -44,6 +55,8 @@ void handleSigInt(int sig)
 }
 int main(int argc, char *argv[])
 {
+    int fdUserPipe;
+    char messageToSend[128];
 
     struct sigaction ctrlc;
     ctrlc.sa_handler = handleSigInt;
@@ -59,7 +72,7 @@ int main(int argc, char *argv[])
 
     // Parse arguments
     int initialPlafond = atoi(argv[1]);
-    int n_reqs = atoi(argv[2]);
+    int n_reqs = atoi(argv[2]); // SE CARATERES NÃO FOREM NUMEROS
     int intervalVideo = atoi(argv[3]);
     int intervalMusic = atoi(argv[4]);
     int intervalSocial = atoi(argv[5]);
@@ -77,7 +90,24 @@ int main(int argc, char *argv[])
     printf("Interval Social: %d\n", intervalSocial);
     printf("Data to reserve: %d\n", dataToReserve);
 
+    // Open named pipe
+    if ((fdUserPipe = open("USER_PIPE", O_WRONLY)) < 0)
+    {
+        printf("Error opening USER_PIPE\n");
+    }
+    // write to pipe
+    // Register message
+    sprintf(messageToSend, "%d#%d", getpid(), initialPlafond);
+    write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
+
     // info to send to named pipe
-    // char info[100]=ID+initialPLafond;
-    pause();
+    int i = 0;
+    while (i < n_reqs)
+    {
+        sleep(intervalVideo);
+        sprintf(messageToSend, "%d#%s#%d", getpid(), "VIDEO", dataToReserve);
+        write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
+        i++;
+    }
+    return 0;
 }

@@ -19,10 +19,22 @@ O processo termina ao receber um sinal SIGINT, ou em caso de erro. Um erro pode 
 parâmetro estiver errado ou ao tentar escrever para o named pipe e a escrita falhar, casos em que
 deverá escrever a mensagem de erro no ecrã. Sempre que termina, o processo deve limpar todos os
 recursos*/
+
 #include <stdio.h>
-#include <signal.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <semaphore.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/fcntl.h>
+#include <time.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/select.h>
+#define _XOPEN_SOURCE 700
 
 void handleSigInt(int sig)
 {
@@ -31,12 +43,19 @@ void handleSigInt(int sig)
 }
 int main()
 {
-
+    int backOfficeUserID = 1;
     struct sigaction ctrlc;
     ctrlc.sa_handler = handleSigInt;
     sigfillset(&ctrlc.sa_mask);
     ctrlc.sa_flags = 0;
     sigaction(SIGINT, &ctrlc, NULL);
+    int fdBackPipe;
+
+    // Open named pipe
+    if ((fdBackPipe = open("BACK_PIPE", O_WRONLY)) < 0)
+    {
+        printf("Error opening BACK_PIPE\n");
+    }
     while (1)
     {
         char command[100];
@@ -45,10 +64,14 @@ int main()
         {
             if (strcmp(command, "data_stats") == 0)
             {
+                sprintf(command, "%d#%s", backOfficeUserID, "data_stats");
+                write(fdBackPipe, command, strlen(command) + 1);
                 printf("printing data stats\n");
             }
             else if (strcmp(command, "reset") == 0)
             {
+                sprintf(command, "%d#%s", backOfficeUserID, "reset");
+                write(fdBackPipe, command, strlen(command) + 1);
                 printf("resetting\n");
             }
             else if (strcmp(command, "exit") == 0)

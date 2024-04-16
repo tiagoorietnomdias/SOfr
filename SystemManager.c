@@ -13,6 +13,15 @@ MAX_VIDEO_WAIT -(>=1) tempo máximo (em ms) que os pedidos de autorização do s
 aguardar para serem executados (>=1)
 MAX_OTHERS_WAIT (>=1)- tempo máximo (em ms) que os pedidos de autorização dos serviços de música e
 de redes sociais, bem como os comandos podem aguardar para serem executados (>=1)*/
+/*Auth request manager:
+• Cria os named pipes USER_PIPE e BACK_PIPE
+• Cria os unnamed pipes para cada Authorization Engine
+• Cria as threads Receiver e Sender
+• Cria as estruturas de dados internas: Video_Streaming_Queue e Others_Services_Queue
+• Criação e remoção dos processos Authorization Engine de acordo com a taxa de ocupação
+das filas*/
+#define DEBUG 1
+
 #define _XOPEN_SOURCE 700
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +35,8 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 #include <time.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/select.h>
 #include "structs.h"
 
 FILE *configFile, *logFile;
@@ -35,6 +46,7 @@ sem_t *logSem, *shmSem;
 pthread_t senderThread, receiverThread;
 int shmid;
 sharedMemory *shm;
+int fdUserPipe, fdBackPipe;
 void writeToLog(char *message)
 {
     time_t now = time(NULL);
@@ -67,6 +79,11 @@ void errorHandler(char *errorMessage)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    close(fdUserPipe);
+    unlink("USER_PIPE");
+    close(fdBackPipe);
+    unlink("BACK_PIPE");
+
     exit(1);
 }
 void handleSigInt(int sig)
@@ -95,6 +112,11 @@ void handleSigInt(int sig)
     sem_unlink("SHM_SEM");
     shmdt(shm);
     shmctl(shmid, IPC_RMID, NULL);
+    close(fdUserPipe);
+    unlink("USER_PIPE");
+    close(fdBackPipe);
+    unlink("BACK_PIPE");
+
     exit(0);
 }
 void setupLogFile()
@@ -137,10 +159,44 @@ void readConfigFile(char *fileName)
         {
             errorHandler("MOBILE USERS, AUTH_SERVERS_MAX, MAX_VIDEO_WAIT and MAX_OTHERS_WAIT >=1");
         }
-    }
+    } // carateres estranhos
     fclose(configFile);
     configFile = NULL;
 }
+
+// pipeCreator: cria os pipes
+void pipeCreator()
+{
+    // Criação dos named pipes
+    if (mkfifo("USER_PIPE", 0666) == -1)
+    {
+        errorHandler("ERROR: Not possible to create USER_PIPE\n");
+    }
+    if ((fdUserPipe = open("USER_PIPE", O_RDWR)) < 0)
+    {
+        errorHandler("ERROR: Not possible to open USER_PIPE\n");
+    }
+#ifdef DEBUG
+    printf("USER_PIPE created and opened\n");
+#endif
+    if (mkfifo("BACK_PIPE", 0666) == -1)
+    {
+        errorHandler("ERROR: Not possible to create BACK_PIPE\n");
+    }
+    if ((fdBackPipe = open("BACK_PIPE", O_RDWR)) < 0)
+    {
+        errorHandler("ERROR: Not possible to open BACK_PIPE\n");
+    }
+    // Criação dos unnamed pipes
+    /*for (int i = 0; i < auth_servers_max; i++)
+    {
+        if (pipe(shm->pipes[i]) == -1)
+        {
+            errorHandler("ERROR: Not possible to create unnamed pipes\n");
+        }
+    }*/
+}
+
 // syncCreator: cria os semáforos
 void syncCreator()
 {
@@ -155,15 +211,106 @@ void syncCreator()
 // authorizationRequestsManager: cria threads Sender e Receiver
 void *senderFunction()
 {
+    writeToLog("SENDER THREAD SUCCESSFULLY CREATED");
     pthread_exit(NULL);
 }
+
 void *receiverFunction()
 {
+    writeToLog("RECEIVER THREAD SUCCESSFULLY CREATED");
+    int readValue;
+    char messageToRead[256];
+    fd_set readSet;
+    int maxfd = (fdUserPipe > fdBackPipe) ? fdUserPipe : fdBackPipe;
+    while (1)
+    {
+        FD_ZERO(&readSet);
+        FD_SET(fdUserPipe, &readSet);
+        FD_SET(fdBackPipe, &readSet);
+        if (select(maxfd + 1, &readSet, NULL, NULL, NULL) == -1)
+        {
+            errorHandler("ERROR: Not possible to select pipe\n");
+        }
+        if (FD_ISSET(fdUserPipe, &readSet))
+        {
+            if ((readValue = read(fdUserPipe, &messageToRead, sizeof(messageToRead))) <= 0)
+            {
+                errorHandler("ERROR: Not possible to read from USER_PIPE\n");
+            }
+        }
+
+        if (FD_ISSET(fdBackPipe, &readSet))
+        {
+            if ((readValue = read(fdBackPipe, &messageToRead, sizeof(messageToRead))) <= 0)
+            {
+                errorHandler("ERROR: Not possible to read from BACK_PIPE\n");
+            }
+        }
+
+        messageToRead[readValue] = '\0';
+
+        int count = 0;
+        char *ptr = messageToRead;
+        char *tokens[3];
+        int token_count = 0;
+        char *token_start = messageToRead;
+        while (*ptr != '\0' && token_count < 3)
+        {
+            if (*ptr == '#')
+            {
+                count++;
+                *ptr = '\0';
+                tokens[token_count++] = token_start;
+                token_start = ptr + 1;
+            }
+            ptr++;
+        }
+        tokens[token_count++] = token_start;
+        if (strcmp(tokens[0], "1") == 0)
+        { // comes from backoffice
+            if (strcmp(tokens[1], "data_stats") == 0)
+            {
+                printf("Data_stats: %s %s\n", tokens[0], tokens[1]);
+            }
+            else if (strcmp(tokens[1], "reset") == 0)
+            {
+                printf("Reset: %s %s\n", tokens[0], tokens[1]);
+            }
+            else
+            {
+                writeToLog("ERROR: Received invalid message format from backoffice user\n");
+            }
+        }
+        else
+        { // comes from mobile user
+            if (count == 1)
+            {
+                printf("Registration message: %s %s\n", tokens[0], tokens[1]);
+                // registration message
+                // add user to shm
+
+                // message format: idToAdd#initialPlafond
+            }
+            else if (count == 2)
+            {
+                printf("Data: %s %s %s\n", tokens[0], tokens[1], tokens[2]);
+                // data request message
+                // message format: idToRequest#category#dataToReserve
+            }
+            else
+            {
+                writeToLog("ERROR: Received invalid message format from mobile user\n");
+            }
+        }
+    }
+
     pthread_exit(NULL);
 }
+
 void authorizationRequestsManager()
 {
-
+    // Create named pipes
+    pipeCreator();
     // Create Sender
     if (pthread_create(&senderThread, NULL, senderFunction, NULL) != 0)
     {
