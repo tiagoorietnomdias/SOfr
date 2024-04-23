@@ -47,16 +47,62 @@ Sempre que o Mobile User termina, o processo deve limpar todos os recursos*/
 #include <signal.h>
 #include <sys/stat.h>
 #define _XOPEN_SOURCE 700
-
+int fdUserPipe;
+char messageToSend[128];
+int currentRequests = 0;
+int initialPlafond, n_reqs, intervalVideo, intervalMusic, intervalSocial, dataToReserve;
+sem_t *mobile_sem;
 void handleSigInt(int sig)
 {
+    sem_unlink("MOBILE_SEM");
     printf("Received SIGINT\n");
+
     exit(0);
+}
+void writeToPipe(char *category)
+{
+    sprintf(messageToSend, "%d#%s#%d", getpid(), category, dataToReserve);
+    write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
+    currentRequests++;
+}
+void *socialFunction()
+{
+    while (currentRequests < n_reqs) // plafond esgotado
+    {
+        sleep(intervalSocial);
+        sem_wait(mobile_sem);
+        writeToPipe("SOCIAL");
+        sem_post(mobile_sem);
+    }
+    return NULL;
+}
+void *musicFunction()
+{
+    while (currentRequests < n_reqs) // plafond esgotado
+    {
+        sleep(intervalMusic);
+        sem_wait(mobile_sem);
+        writeToPipe("MUSIC");
+        sem_post(mobile_sem);
+    }
+    return NULL;
+}
+void *videoFunction()
+{
+    while (currentRequests < n_reqs) // plafond esgotado
+    {
+        sleep(intervalVideo);
+        sem_wait(mobile_sem);
+        writeToPipe("VIDEO");
+        sem_post(mobile_sem);
+    }
+    return NULL;
 }
 int main(int argc, char *argv[])
 {
-    int fdUserPipe;
-    char messageToSend[128];
+    sem_unlink("MOBILE_SEM");
+    pthread_t musicThread, socialThread, videoThread;
+    // Semaforo para escrita no pipe
 
     struct sigaction ctrlc;
     ctrlc.sa_handler = handleSigInt;
@@ -71,12 +117,12 @@ int main(int argc, char *argv[])
     }
 
     // Parse arguments
-    int initialPlafond = atoi(argv[1]);
-    int n_reqs = atoi(argv[2]); // SE CARATERES NÃO FOREM NUMEROS
-    int intervalVideo = atoi(argv[3]);
-    int intervalMusic = atoi(argv[4]);
-    int intervalSocial = atoi(argv[5]);
-    int dataToReserve = atoi(argv[6]);
+    initialPlafond = atoi(argv[1]);
+    n_reqs = atoi(argv[2]); // SE CARATERES NÃO FOREM NUMEROS
+    intervalVideo = atoi(argv[3]);
+    intervalMusic = atoi(argv[4]);
+    intervalSocial = atoi(argv[5]);
+    dataToReserve = atoi(argv[6]);
     if (initialPlafond < 0 || n_reqs < 0 || intervalVideo < 0 || intervalMusic < 0 || intervalSocial < 0 || dataToReserve < 0)
     {
         printf("Usage: all arguments must be >0\n");
@@ -95,19 +141,38 @@ int main(int argc, char *argv[])
     {
         printf("Error opening USER_PIPE\n");
     }
+
+    mobile_sem = sem_open("MOBILE_SEM", O_CREAT | O_EXCL, 0700, 1);
+    if (mobile_sem == SEM_FAILED)
+    {
+        printf("ERROR: Not possible to create mobile_sem semaphore\n");
+        exit(1);
+    }
+
     // write to pipe
     // Register message
     sprintf(messageToSend, "%d#%d", getpid(), initialPlafond);
     write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
-
-    // info to send to named pipe
-    int i = 0;
-    while (i < n_reqs)
+    // Thread creation, one for each service
+    // Social
+    if (pthread_create(&socialThread, NULL, socialFunction, NULL) != 0)
     {
-        sleep(intervalVideo);
-        sprintf(messageToSend, "%d#%s#%d", getpid(), "VIDEO", dataToReserve);
-        write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
-        i++;
+        printf("Not able to create thread social");
+        exit(1);
     }
+    // Music
+    if (pthread_create(&musicThread, NULL, musicFunction, NULL) != 0)
+    {
+        printf("Not able to create thread music");
+        exit(1);
+    }
+    // Video
+    if (pthread_create(&videoThread, NULL, videoFunction, NULL) != 0)
+    {
+        printf("Not able to create thread video");
+        exit(1);
+    }
+    pause();
+
     return 0;
 }

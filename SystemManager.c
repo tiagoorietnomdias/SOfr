@@ -42,11 +42,14 @@ das filas*/
 FILE *configFile, *logFile;
 int config[5];
 int mobile_users, queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
-sem_t *logSem, *shmSem;
+sem_t *logSem, *shmSem, *empty, *full;
+sem_t *mutualExclusion;
 pthread_t senderThread, receiverThread;
 int shmid;
 sharedMemory *shm;
 int fdUserPipe, fdBackPipe;
+userMessage *video_streaming_queue, *others_services_queue;
+
 void writeToLog(char *message)
 {
     time_t now = time(NULL);
@@ -79,6 +82,8 @@ void errorHandler(char *errorMessage)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    sem_unlink("FULL");
+    sem_unlink("EMPTY");
     close(fdUserPipe);
     unlink("USER_PIPE");
     close(fdBackPipe);
@@ -110,6 +115,8 @@ void handleSigInt(int sig)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    sem_unlink("FULL");
+    sem_unlink("EMPTY");
     shmdt(shm);
     shmctl(shmid, IPC_RMID, NULL);
     close(fdUserPipe);
@@ -132,7 +139,6 @@ void setupLogFile()
         errorHandler("ERROR: Not possible to create log semaphore\n");
     }
 }
-
 void readConfigFile(char *fileName)
 {
 
@@ -141,7 +147,6 @@ void readConfigFile(char *fileName)
     {
         errorHandler("Could not open config file\n");
     }
-
     char line[30];
     int i;
     for (i = 0; i < 6; i++)
@@ -163,7 +168,6 @@ void readConfigFile(char *fileName)
     fclose(configFile);
     configFile = NULL;
 }
-
 // pipeCreator: cria os pipes
 void pipeCreator()
 {
@@ -196,7 +200,6 @@ void pipeCreator()
         }
     }*/
 }
-
 // syncCreator: cria os semáforos
 void syncCreator()
 {
@@ -206,8 +209,33 @@ void syncCreator()
     {
         errorHandler("ERROR: Not possible to create shared memory semaphore\n");
     }
+    full = sem_open("FULL", O_CREAT | O_EXCL, 0700, 0);
+    if (full == SEM_FAILED)
+    {
+        errorHandler("ERROR: Not possible to create full semaphore\n");
+    }
+    empty = sem_open("EMPTY", O_CREAT | O_EXCL, 0700, queue_pos);
+    if (empty == SEM_FAILED)
+    {
+        errorHandler("ERROR: Not possible to create empty semaphore\n");
+    }
 }
+// queueCreator: cria as filas
+void queueCreator()
+{
+    video_streaming_queue = (userMessage *)malloc(sizeof(userMessage) * queue_pos);
+    if (video_streaming_queue == NULL)
+    {
+        errorHandler("ERROR: Not possible to create Video_Streaming_Queue\n");
+    }
+    others_services_queue = (userMessage *)malloc(sizeof(userMessage) * queue_pos);
+    if (others_services_queue == NULL)
+    {
+        errorHandler("ERROR: Not possible to create Others_Services_Queue\n");
+    }
 
+
+}
 // authorizationRequestsManager: cria threads Sender e Receiver
 void *senderFunction()
 {
@@ -296,6 +324,16 @@ void *receiverFunction()
                 printf("Data: %s %s %s\n", tokens[0], tokens[1], tokens[2]);
                 // data request message
                 // message format: idToRequest#category#dataToReserve
+                //create userMessage
+                userMessage *newMessage = (userMessage *)malloc(sizeof(userMessage));
+                newMessage->userID = atoi(tokens[0]);
+                strcpy(newMessage->category, tokens[1]);
+                newMessage->dataToReserve = atoi(tokens[2]);
+                time_t now = time(NULL);
+                newMessage->timeOfRequest = now;
+                
+                //wait until queue is not full
+
             }
             else
             {
@@ -321,6 +359,9 @@ void authorizationRequestsManager()
     {
         errorHandler("Not able to create thread receiver");
     }
+    //Create Video_Streaming_Queue and Others_Services_Queue
+    queueCreator(); 
+
     pause();
 }
 void monitorEngine()
@@ -346,6 +387,8 @@ int main(int argc, char *argv[])
 {
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    sem_unlink("FULL");
+    sem_unlink("EMPTY");
 
     // Initialize the signal handler
     struct sigaction ctrlc;

@@ -24,5 +24,12 @@ typedef struct sharedMemory
 } sharedMemory;
 // pedidos, megas e..
 
+typedef struct userMessage
+{
+    int userID;
+    char category[10];
+    int dataToReserve;
+    time_t timeOfRequest;
 
+} userMessage;
 //Estruturaa de mensagem para pôr nas mqueues
