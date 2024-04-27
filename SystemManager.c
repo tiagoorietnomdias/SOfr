@@ -20,6 +20,10 @@ de redes sociais, bem como os comandos podem aguardar para serem executados (>=1
 • Cria as estruturas de dados internas: Video_Streaming_Queue e Others_Services_Queue
 • Criação e remoção dos processos Authorization Engine de acordo com a taxa de ocupação
 das filas*/
+/* Receiver escreve nas queues e sender lê das queues. Sender vê se há authorization engines disponíveis e, se houver,
+escolhe 1 para processar o pedido. Sendar lê da queue e escreve no pipe do authorization engine. Authorization engine lê do pipe
+e atualiza a shared memory.
+*/
 #define DEBUG 1
 
 #define _XOPEN_SOURCE 700
@@ -42,13 +46,17 @@ das filas*/
 FILE *configFile, *logFile;
 int config[5];
 int mobile_users, queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
-sem_t *logSem, *shmSem, *empty, *full;
-sem_t *mutualExclusion;
+sem_t *logSem, *shmSem;
+sem_t videoEmpty, videoFull;
+// mutual exclusion is now a pthread mutex
+pthread_mutex_t mutualExclusionVideo;
 pthread_t senderThread, receiverThread;
 int shmid;
 sharedMemory *shm;
 int fdUserPipe, fdBackPipe;
-userMessage *video_streaming_queue, *others_services_queue;
+userMessage *video_streaming_queue; //, *others_services_queue;
+int (*authEnginePipes)[2];
+int *authEngineAvailable;
 
 void writeToLog(char *message)
 {
@@ -82,12 +90,22 @@ void errorHandler(char *errorMessage)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
-    sem_unlink("FULL");
-    sem_unlink("EMPTY");
+    sem_destroy(&videoEmpty);
+    sem_destroy(&videoFull);
+    pthread_mutex_destroy(&mutualExclusionVideo);
     close(fdUserPipe);
     unlink("USER_PIPE");
     close(fdBackPipe);
     unlink("BACK_PIPE");
+    free(video_streaming_queue);
+    // free(others_services_queue);
+    for (int i = 0; i < auth_servers_max; i++)
+    {
+        close(authEnginePipes[i][0]);
+        close(authEnginePipes[i][1]);
+    }
+    free(authEnginePipes);
+    free(authEngineAvailable);
 
     exit(1);
 }
@@ -115,14 +133,23 @@ void handleSigInt(int sig)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
-    sem_unlink("FULL");
-    sem_unlink("EMPTY");
+    sem_destroy(&videoEmpty);
+    sem_destroy(&videoFull);
+    pthread_mutex_destroy(&mutualExclusionVideo);
     shmdt(shm);
     shmctl(shmid, IPC_RMID, NULL);
     close(fdUserPipe);
     unlink("USER_PIPE");
     close(fdBackPipe);
     unlink("BACK_PIPE");
+    free(video_streaming_queue);
+    for (int i = 0; i < auth_servers_max; i++)
+    {
+        close(authEnginePipes[i][0]);
+        close(authEnginePipes[i][1]);
+    }
+    free(authEnginePipes);
+    free(authEngineAvailable);
 
     exit(0);
 }
@@ -191,14 +218,6 @@ void pipeCreator()
     {
         errorHandler("ERROR: Not possible to open BACK_PIPE\n");
     }
-    // Criação dos unnamed pipes
-    /*for (int i = 0; i < auth_servers_max; i++)
-    {
-        if (pipe(shm->pipes[i]) == -1)
-        {
-            errorHandler("ERROR: Not possible to create unnamed pipes\n");
-        }
-    }*/
 }
 // syncCreator: cria os semáforos
 void syncCreator()
@@ -209,15 +228,13 @@ void syncCreator()
     {
         errorHandler("ERROR: Not possible to create shared memory semaphore\n");
     }
-    full = sem_open("FULL", O_CREAT | O_EXCL, 0700, 0);
-    if (full == SEM_FAILED)
+    // Semaforo para a fila de video
+    sem_init(&videoEmpty, 0, 0);
+    sem_init(&videoFull, 0, queue_pos);
+    // Zona de exclusão mútua
+    if (pthread_mutex_init(&mutualExclusionVideo, NULL) != 0)
     {
-        errorHandler("ERROR: Not possible to create full semaphore\n");
-    }
-    empty = sem_open("EMPTY", O_CREAT | O_EXCL, 0700, queue_pos);
-    if (empty == SEM_FAILED)
-    {
-        errorHandler("ERROR: Not possible to create empty semaphore\n");
+        errorHandler("ERROR: Not possible to create mutual exclusion mutex\n");
     }
 }
 // queueCreator: cria as filas
@@ -228,18 +245,63 @@ void queueCreator()
     {
         errorHandler("ERROR: Not possible to create Video_Streaming_Queue\n");
     }
-    others_services_queue = (userMessage *)malloc(sizeof(userMessage) * queue_pos);
-    if (others_services_queue == NULL)
+    // initialize every element of queue .isMessageHere to 0
+    for (int i = 0; i < queue_pos; i++)
     {
-        errorHandler("ERROR: Not possible to create Others_Services_Queue\n");
+        video_streaming_queue[i].isMessageHere = 0;
     }
 
-
+    // others_services_queue = (userMessage *)malloc(sizeof(userMessage) * queue_pos);
+    // if (others_services_queue == NULL)
+    // {
+    //     errorHandler("ERROR: Not possible to create Others_Services_Queue\n");
+    // }
 }
+// authEngineFunction: função que executa o código de cada Authorization Engine
+void authEngineFunction(int index)
+{
+    // Create unnamed pipe on index pipe
+    if (pipe(authEnginePipes[index]) == -1)
+    {
+        errorHandler("ERROR: Not possible to create Authorization Engine pipe\n");
+    }
+    // close write end of pipe
+    close(authEnginePipes[index][1]);
+    // Mark this as available
+    authEngineAvailable[index] = 1;
+}
+void authEngineCreator()
+{
+    // Criação dos unnamed pipes para os Authorization Engines
+    authEnginePipes = malloc(sizeof(*authEnginePipes) * auth_servers_max);
+    authEngineAvailable = malloc(sizeof(*authEngineAvailable) * auth_servers_max);
+    for (int i = 0; i < auth_servers_max; i++)
+    {
+        authEngineAvailable[i] = 0;
+    }
+    // Criação dos Authorization Engines
+    for (int i = 0; i < auth_servers_max; i++)
+    {
+        pid_t pid = fork();
+        if (pid == -1)
+        {
+            errorHandler("ERROR: Not possible to create Authorization Engine\n");
+        }
+        if (pid == 0)
+        {
+            authEngineFunction(i);
+        }
+    }
+}
+
 // authorizationRequestsManager: cria threads Sender e Receiver
 void *senderFunction()
 {
     writeToLog("SENDER THREAD SUCCESSFULLY CREATED");
+
+    // Esperar que haja pelo menos um authorization engine disponível
+    // Como o fazer? Usar variável de condição?
+
     pthread_exit(NULL);
 }
 
@@ -324,16 +386,32 @@ void *receiverFunction()
                 printf("Data: %s %s %s\n", tokens[0], tokens[1], tokens[2]);
                 // data request message
                 // message format: idToRequest#category#dataToReserve
-                //create userMessage
+                // create userMessage
                 userMessage *newMessage = (userMessage *)malloc(sizeof(userMessage));
                 newMessage->userID = atoi(tokens[0]);
                 strcpy(newMessage->category, tokens[1]);
                 newMessage->dataToReserve = atoi(tokens[2]);
                 time_t now = time(NULL);
                 newMessage->timeOfRequest = now;
-                
-                //wait until queue is not full
+                // wait until video queue is not full
+                sem_wait(&videoFull);
+                // lock for mutual exclusion mutex
+                pthread_mutex_lock(&mutualExclusionVideo);
 
+                for (int i = 0; i < queue_pos; i++)
+                {
+                    if (video_streaming_queue[i].isMessageHere == 0)
+                    {
+                        printf("Message added to video queue index %d\n", i);
+                        video_streaming_queue[i] = *newMessage;
+                        video_streaming_queue[i].isMessageHere = 1;
+                        break;
+                    }
+                }
+                // unlock for mutual exclusion mutex
+                pthread_mutex_unlock(&mutualExclusionVideo);
+                // signal for video queue
+                sem_post(&videoEmpty);
             }
             else
             {
@@ -347,6 +425,8 @@ void *receiverFunction()
 
 void authorizationRequestsManager()
 {
+    // Create authorization engine processes
+    authEngineCreator();
     // Create named pipes
     pipeCreator();
     // Create Sender
@@ -359,8 +439,8 @@ void authorizationRequestsManager()
     {
         errorHandler("Not able to create thread receiver");
     }
-    //Create Video_Streaming_Queue and Others_Services_Queue
-    queueCreator(); 
+    // Create Video_Streaming_Queue and Others_Services_Queue
+    queueCreator();
 
     pause();
 }
@@ -385,10 +465,11 @@ void initializeSharedMemory()
 }
 int main(int argc, char *argv[])
 {
+    sem_destroy(&videoEmpty);
+    sem_destroy(&videoFull);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
-    sem_unlink("FULL");
-    sem_unlink("EMPTY");
+    pthread_mutex_destroy(&mutualExclusionVideo);
 
     // Initialize the signal handler
     struct sigaction ctrlc;

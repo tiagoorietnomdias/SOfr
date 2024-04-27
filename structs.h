@@ -30,6 +30,7 @@ typedef struct userMessage
     char category[10];
     int dataToReserve;
     time_t timeOfRequest;
+    int isMessageHere;
 
 } userMessage;
 //Estruturaa de mensagem para pôr nas mqueues
