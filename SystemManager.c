@@ -46,8 +46,8 @@ e atualiza a shared memory.
 FILE *configFile, *logFile;
 int config[5];
 int mobile_users, queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
-sem_t *logSem, *shmSem;
-sem_t videoEmpty, videoFull;
+sem_t *logSem, *shmSem, *authEngineAvailableSem;
+sem_t videoEmpty;
 // mutual exclusion is now a pthread mutex
 pthread_mutex_t mutualExclusionVideo;
 pthread_t senderThread, receiverThread;
@@ -56,8 +56,6 @@ sharedMemory *shm;
 int fdUserPipe, fdBackPipe;
 userMessage *video_streaming_queue; //, *others_services_queue;
 int (*authEnginePipes)[2];
-int *authEngineAvailable;
-
 void writeToLog(char *message)
 {
     time_t now = time(NULL);
@@ -90,8 +88,8 @@ void errorHandler(char *errorMessage)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    sem_unlink("AUTH_ENGINE_SEM");
     sem_destroy(&videoEmpty);
-    sem_destroy(&videoFull);
     pthread_mutex_destroy(&mutualExclusionVideo);
     close(fdUserPipe);
     unlink("USER_PIPE");
@@ -105,7 +103,6 @@ void errorHandler(char *errorMessage)
         close(authEnginePipes[i][1]);
     }
     free(authEnginePipes);
-    free(authEngineAvailable);
 
     exit(1);
 }
@@ -133,8 +130,8 @@ void handleSigInt(int sig)
     sem_close(shmSem);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    sem_unlink("AUTH_ENGINE_SEM");
     sem_destroy(&videoEmpty);
-    sem_destroy(&videoFull);
     pthread_mutex_destroy(&mutualExclusionVideo);
     shmdt(shm);
     shmctl(shmid, IPC_RMID, NULL);
@@ -143,13 +140,13 @@ void handleSigInt(int sig)
     close(fdBackPipe);
     unlink("BACK_PIPE");
     free(video_streaming_queue);
-    for (int i = 0; i < auth_servers_max; i++)
-    {
-        close(authEnginePipes[i][0]);
-        close(authEnginePipes[i][1]);
-    }
-    free(authEnginePipes);
-    free(authEngineAvailable);
+    // for (int i = 0; i < auth_servers_max; i++)
+    // {
+    //     close(authEnginePipes[i][0]);
+    //     close(authEnginePipes[i][1]);
+    // }
+    // free(authEnginePipes);
+    // free(authEngineAvailable);
 
     exit(0);
 }
@@ -207,9 +204,6 @@ void pipeCreator()
     {
         errorHandler("ERROR: Not possible to open USER_PIPE\n");
     }
-#ifdef DEBUG
-    printf("USER_PIPE created and opened\n");
-#endif
     if (mkfifo("BACK_PIPE", 0666) == -1)
     {
         errorHandler("ERROR: Not possible to create BACK_PIPE\n");
@@ -230,7 +224,6 @@ void syncCreator()
     }
     // Semaforo para a fila de video
     sem_init(&videoEmpty, 0, 0);
-    sem_init(&videoFull, 0, queue_pos);
     // Zona de exclusão mútua
     if (pthread_mutex_init(&mutualExclusionVideo, NULL) != 0)
     {
@@ -265,19 +258,44 @@ void authEngineFunction(int index)
     {
         errorHandler("ERROR: Not possible to create Authorization Engine pipe\n");
     }
-    // close write end of pipe
-    close(authEnginePipes[index][1]);
-    // Mark this as available
-    authEngineAvailable[index] = 1;
+    printf("Pipe %d: Read end: %d, Write end: %d\n", index, authEnginePipes[index][0], authEnginePipes[index][1]);
+    sem_post(authEngineAvailableSem);
+
+    pause();
+    //     // Mark this as available
+    //
+    //     // post semaphore
+    //     sem_post(authEngineAvailableSem);
+
+    //     // wait for message from sender
+    //     char messageToRead[256];
+    //     int readValue;
+    //     while (1)
+    //     {
+    //         printf("Os teus problemas são para esquecer\n");
+    //         if ((readValue = read(authEnginePipes[index][0], &messageToRead, sizeof(messageToRead))) <= 0)
+    //         {
+    //             errorHandler("ERROR: Not possible to read from Authorization Engine pipe\n");
+    //         }
+    //         printf("Akuna matata\n");
+    //         messageToRead[readValue] = '\0';
+    //         printf("Message received: %s\n", messageToRead);
+
+    //     }
 }
 void authEngineCreator()
 {
+    // Criação do semáforo para os Authorization Engines
+    authEngineAvailableSem = sem_open("AUTH_ENGINE_SEM", O_CREAT | O_EXCL, 0700, 0);
+    if (authEngineAvailableSem == SEM_FAILED)
+    {
+        errorHandler("Not possible to create Authorization Engine available semaphore\n");
+    }
     // Criação dos unnamed pipes para os Authorization Engines
     authEnginePipes = malloc(sizeof(*authEnginePipes) * auth_servers_max);
-    authEngineAvailable = malloc(sizeof(*authEngineAvailable) * auth_servers_max);
-    for (int i = 0; i < auth_servers_max; i++)
+    if (authEnginePipes == NULL)
     {
-        authEngineAvailable[i] = 0;
+        errorHandler("Not possible to create Authorization Engine pipes\n");
     }
     // Criação dos Authorization Engines
     for (int i = 0; i < auth_servers_max; i++)
@@ -299,9 +317,32 @@ void *senderFunction()
 {
     writeToLog("SENDER THREAD SUCCESSFULLY CREATED");
 
-    // Esperar que haja pelo menos um authorization engine disponível
-    // Como o fazer? Usar variável de condição?
+    // WAIT FOR AUTHORIZATION ENGINE TO BE AVAILABLE
+    sem_wait(authEngineAvailableSem);
+    // get index of the first available auth engine
+    // wait for message from receiver
+    sem_wait(&videoEmpty);
+    // lock for mutual exclusion mutex
+    pthread_mutex_lock(&mutualExclusionVideo);
+    // go through the queue to find message to send
+    for (int i = 0; i < queue_pos; i++)
+    {
+        if (video_streaming_queue[i].isMessageHere == 1)
+        {
 
+            // send message to Authorization Engine
+            char messageToSend[128];
+            sprintf(messageToSend, "%d#%s#%d", video_streaming_queue[i].userID, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
+            // printf("I will attempt to write to pipe %d end %d\n", index, authEnginePipes[index][1]);
+            // if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend) + 1) <= 0)
+            // {
+            //     errorHandler("Not possible to write to Authorization Engine pipe\n");
+            // }
+            // remove message from queue
+            video_streaming_queue[i].isMessageHere = 0;
+            break;
+        }
+    }
     pthread_exit(NULL);
 }
 
@@ -383,7 +424,7 @@ void *receiverFunction()
             }
             else if (count == 2)
             {
-                printf("Data: %s %s %s\n", tokens[0], tokens[1], tokens[2]);
+                // printf("Data: %s %s %s\n", tokens[0], tokens[1], tokens[2]);
                 // data request message
                 // message format: idToRequest#category#dataToReserve
                 // create userMessage
@@ -393,8 +434,7 @@ void *receiverFunction()
                 newMessage->dataToReserve = atoi(tokens[2]);
                 time_t now = time(NULL);
                 newMessage->timeOfRequest = now;
-                // wait until video queue is not full
-                sem_wait(&videoFull);
+
                 // lock for mutual exclusion mutex
                 pthread_mutex_lock(&mutualExclusionVideo);
 
@@ -466,9 +506,9 @@ void initializeSharedMemory()
 int main(int argc, char *argv[])
 {
     sem_destroy(&videoEmpty);
-    sem_destroy(&videoFull);
     sem_unlink("LOG_SEM");
     sem_unlink("SHM_SEM");
+    sem_unlink("AUTH_ENGINE_SEM");
     pthread_mutex_destroy(&mutualExclusionVideo);
 
     // Initialize the signal handler

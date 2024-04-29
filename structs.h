@@ -1,29 +1,34 @@
-typedef struct music
+typedef struct user
 {
-    float usedPlafond;
-    int authReqNumber;
-} music;
-typedef struct social
-{
-    float usedPlafond;
-    int authReqNumber;
-} social;
-typedef struct video
-{
-    float usedPlafond;
-    int authReqNumber;
-} video;
-typedef struct sharedMemory
-{ /// adicionar estrutura com estatisticas para monitor engine
     int userID;
     float currentPlafond;
-    music musicUsed;
-    social socialUsed;
-    video videoUsed;
+    int musicUsed;
+    int socialUsed;
+    int videoUsed;
+
+}user;
+
+typedef struct sharedMemory
+{ 
+    //array de authorization engine available
+    int *authEngineAvailable;
+    //array de utilizadores
+    user *users;
 
 } sharedMemory;
-// pedidos, megas e..
+// pedidos, megas e../
 
+//Estrutura com estatisticas para monitor engine
+typedef struct stats{
+    int totalRequestsMusic;
+    int totalRequestsSocial;
+    int totalRequestsVideo;
+    int totalRequests;//????
+
+}stats;
+
+
+// Estruturaa de mensagem para pôr nas mqueues
 typedef struct userMessage
 {
     int userID;
@@ -33,4 +38,3 @@ typedef struct userMessage
     int isMessageHere;
 
 } userMessage;
-//Estruturaa de mensagem para pôr nas mqueues
