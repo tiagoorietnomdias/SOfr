@@ -10,7 +10,7 @@ mobile_user: MobileUser.c
 	$(CC) $(CFLAGS) -o mobile_user MobileUser.c -lpthread
 
 backoffice_user: BackofficeUser.c
-	$(CC) $(CFLAGS) -o backoffice_user BackofficeUser.c
+	$(CC) $(CFLAGS) -o backoffice_user BackofficeUser.c -lpthread
 
 clean:
 	rm -f 5g_auth_platform mobile_user backoffice_user

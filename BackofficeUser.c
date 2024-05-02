@@ -34,12 +34,60 @@ recursos*/
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/select.h>
+#include <sys/msg.h>
 #define _XOPEN_SOURCE 700
+
+int mQueueID;
+pthread_t queueThread;
+
+typedef struct stats
+{
+    int totalRequestsMusic;
+    int nRequestsMusic;
+    int totalRequestsSocial;
+    int nRequestsSocial;
+    int totalRequestsVideo;
+    int nRequestsVideo;
+
+} stats;
+typedef struct mQMessageBackOffice
+{
+    long mtype;
+    stats stats;
+
+} mQMessageBackOffice;
 
 void handleSigInt(int sig)
 {
     printf("Received SIGINT\n");
+    pthread_cancel(queueThread);
+    pthread_join(queueThread, NULL);
     exit(0);
+}
+void *readFromQueue()
+{
+    key_t key = ftok("./config.txt", 65);
+    if ((mQueueID = msgget(key, 0666)) == -1)
+    {
+        printf("Error creating message queue\n");
+        exit(1);
+    }
+
+    while (1)
+    {
+        mQMessageBackOffice message;
+        if (msgrcv(mQueueID, &message, sizeof(message), 1, 0) == -1)
+        {
+            printf("Error receiving message from queue\n");
+            exit(1);
+        }
+        printf("Total Requests Music: %d\n", message.stats.totalRequestsMusic);
+        printf("Number of Requests Music: %d\n", message.stats.nRequestsMusic);
+        printf("Total Requests Social: %d\n", message.stats.totalRequestsSocial);
+        printf("Number of Requests Social: %d\n", message.stats.nRequestsSocial);
+        printf("Total Requests Video: %d\n", message.stats.totalRequestsVideo);
+        printf("Number of Requests Video: %d\n", message.stats.nRequestsVideo);
+    }
 }
 int main()
 {
@@ -56,6 +104,9 @@ int main()
     {
         printf("Error opening BACK_PIPE\n");
     }
+    // Create reading thread for message queue
+    pthread_create(&queueThread, NULL, readFromQueue, NULL);
+
     while (1)
     {
         char command[100];

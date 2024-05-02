@@ -5,30 +5,39 @@ typedef struct user
     int musicUsed;
     int socialUsed;
     int videoUsed;
+    float originalPlafond;
+    int wasNotified;
 
-}user;
+} user;
+// Estrutura com estatisticas para monitor engine
+typedef struct stats
+{
+    int totalRequestsMusic;
+    int nRequestsMusic;
+    int totalRequestsSocial;
+    int nRequestsSocial;
+    int totalRequestsVideo;
+    int nRequestsVideo;
+
+} stats;
+typedef struct engines
+{
+    int available;
+    pid_t pid;
+} engines;
 
 typedef struct sharedMemory
-{ 
-    //array de authorization engine available
-    int *authEngineAvailable;
-    //array de utilizadores
+{
+    // array de authorization engine available
+    engines *authEngines;
+    // array de utilizadores
     user *users;
+    stats stats;
 
 } sharedMemory;
 // pedidos, megas e../
 
-//Estrutura com estatisticas para monitor engine
-typedef struct stats{
-    int totalRequestsMusic;
-    int totalRequestsSocial;
-    int totalRequestsVideo;
-    int totalRequests;//????
-
-}stats;
-
-
-// Estruturaa de mensagem para pôr nas mqueues
+// Estruturaa de mensagem para pôr na video queue e other services queue
 typedef struct userMessage
 {
     int userID;
@@ -36,5 +45,19 @@ typedef struct userMessage
     int dataToReserve;
     time_t timeOfRequest;
     int isMessageHere;
+    int isRegistration;
 
 } userMessage;
+// Estrutura de mensagem para pôr na message queue
+typedef struct mQMessageMobile
+{
+    long mtype;
+    int typeOfAlert;
+} mQMessageMobile;
+
+typedef struct mQMessageBackOffice
+{
+    long mtype;
+    stats stats;
+
+} mQMessageBackOffice;

@@ -32,6 +32,7 @@ O processo Mobile User termina quando uma das seguintes condições se verificar
 escrever para o named pipe e a escrita falhar. Nestes casos deve escrever a mensagem de erro
 no ecrã.
 Sempre que o Mobile User termina, o processo deve limpar todos os recursos*/
+// #define DEBUG
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,18 +47,33 @@ Sempre que o Mobile User termina, o processo deve limpar todos os recursos*/
 #include <sys/wait.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/msg.h>
 #define _XOPEN_SOURCE 700
 int fdUserPipe;
 char messageToSend[128];
 int currentRequests = 0;
 int initialPlafond, n_reqs, intervalVideo, intervalMusic, intervalSocial, dataToReserve;
 sem_t *mobile_sem;
+int mQueueID;
+typedef struct mQMessage
+{
+    long mtype;
+    int typeOfAlert;
+} mQMessage;
 void handleSigInt(int sig)
 {
     sem_unlink("MOBILE_SEM");
+    // delete message queue
     printf("Received SIGINT\n");
 
     exit(0);
+}
+void exitSafely()
+{
+    sem_unlink("MOBILE_SEM");
+    // delete message queue
+    // msgctl(mQueueID, IPC_RMID, NULL);
+    exit(1);
 }
 void writeToPipe(char *category)
 {
@@ -98,10 +114,50 @@ void *videoFunction()
     }
     return NULL;
 }
+void *mQueueFunction()
+{
+
+    key_t key = ftok("./config.txt", 65);
+    if ((mQueueID = msgget(key, 0666)) == -1)
+    {
+        printf("Error creating message queue\n");
+        exit(1);
+    }
+
+    while (1)
+    {
+        mQMessage mQMessage;
+        if (msgrcv(mQueueID, &mQMessage, sizeof(mQMessage), getpid(), 0) == -1)
+        {
+            printf("Message queue no longer available\n");
+            exitSafely();
+        }
+#ifdef DEBUG
+        printf("ID: %ld\n", mQMessage.mtype);
+        printf("Type of alert %d\n", mQMessage.typeOfAlert);
+#endif
+        if (mQMessage.typeOfAlert == 1)
+        {
+            // 80%
+            printf("Received 80%% alert\n");
+        }
+        else if (mQMessage.typeOfAlert == 2)
+        {
+            // 90%
+            printf("Received 90%% alert\n");
+        }
+        else if (mQMessage.typeOfAlert == 3)
+        {
+            // 100%
+            printf("Received 100%% alert\n");
+            exitSafely();
+        }
+    }
+}
 int main(int argc, char *argv[])
 {
     sem_unlink("MOBILE_SEM");
-    pthread_t musicThread, socialThread, videoThread;
+    pthread_t musicThread, socialThread, videoThread, mQueueThread;
     // Semaforo para escrita no pipe
 
     struct sigaction ctrlc;
@@ -170,6 +226,12 @@ int main(int argc, char *argv[])
     if (pthread_create(&videoThread, NULL, videoFunction, NULL) != 0)
     {
         printf("Not able to create thread video");
+        exit(1);
+    }
+    // MQueue
+    if (pthread_create(&mQueueThread, NULL, mQueueFunction, NULL) != 0)
+    {
+        printf("Not able to create thread mQueue");
         exit(1);
     }
     pause();

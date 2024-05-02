@@ -3,3 +3,4 @@ log.txt
 .vscode/settings.json
 mobile_user
 backoffice_user
+kill_ipcs.sh
