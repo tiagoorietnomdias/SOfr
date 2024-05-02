@@ -145,11 +145,11 @@ void errorHandler(char *errorMessage)
     unlink("BACK_PIPE");
     // Queues
     free(video_streaming_queue);
+    free(others_services_queue);
 
     // Message Queue
     msgctl(mQueueId, IPC_RMID, NULL);
 
-    // free(others_services_queue);
     // Mutex
     pthread_mutex_destroy(&mutualExclusionVideo);
 
@@ -409,19 +409,19 @@ void authEngineFunction(int index)
             // message structure: idToRequest#category#dataToReserve
             // find user in shm and update data
             sem_wait(shmSem);
-            if (atoi(tokens[2]) == 0) // if data to reserve is 0, it is a registration message
+            if (strcmp(tokens[1], "registration") == 0) // if tokens[1] is "registration" we register the user
             {
-                
+
                 for (int i = 0; i < mobile_users; i++)
                 {
                     if (shm->users[i].userID == 0) // if we find an empty user, we register the new user
                     {
                         shm->users[i].userID = atoi(tokens[0]);
-                        shm->users[i].currentPlafond = atoi(tokens[1]);
+                        shm->users[i].currentPlafond = atoi(tokens[2]);
                         shm->users[i].musicUsed = 0;
                         shm->users[i].socialUsed = 0;
                         shm->users[i].videoUsed = 0;
-                        shm->users[i].originalPlafond = atoi(tokens[1]);
+                        shm->users[i].originalPlafond = atoi(tokens[2]);
                         shm->users[i].wasNotified = 0;
                         break;
                     }
@@ -430,9 +430,38 @@ void authEngineFunction(int index)
                         printf("User %d could not be registered\n", atoi(tokens[0]));
                     }
                 }
-            }
-            else // if data to reserve is not 0, it is a data request message
+            } // or it can be a backofficeUserCommand
+            else if (strcmp(tokens[1], "data_stats") == 0 || strcmp(tokens[1], "reset") == 0)
+            {
 
+                if (strcmp(tokens[1], "data_stats") == 0)
+                {
+                    // write to message queue
+                    mQMessageBackOffice message;
+                    message.mtype = 1;
+                    message.stats.totalRequestsMusic = shm->stats.totalRequestsMusic;
+                    message.stats.totalRequestsSocial = shm->stats.totalRequestsSocial;
+                    message.stats.totalRequestsVideo = shm->stats.totalRequestsVideo;
+                    message.stats.nRequestsMusic = shm->stats.nRequestsMusic;
+                    message.stats.nRequestsSocial = shm->stats.nRequestsSocial;
+                    message.stats.nRequestsVideo = shm->stats.nRequestsVideo;
+                    msgsnd(mQueueId, &message, sizeof(message), 0);
+                }
+                else
+                {
+                    // reset all the stats
+                    shm->stats.totalRequestsMusic = 0;
+                    shm->stats.totalRequestsSocial = 0;
+                    shm->stats.totalRequestsVideo = 0;
+                    shm->stats.nRequestsMusic = 0;
+                    shm->stats.nRequestsSocial = 0;
+                    shm->stats.nRequestsVideo = 0;
+                }
+                
+            }
+
+            else // it is a data request message
+            {
                 for (int i = 0; i < mobile_users; i++)
                 {
                     if (shm->users[i].userID == atoi(tokens[0]))
@@ -476,6 +505,7 @@ void authEngineFunction(int index)
         }
     }
 }
+
 void authEngineCreator()
 {
     // Criação do semáforo para os Authorization Engines
@@ -540,6 +570,7 @@ void *senderFunction()
         // wait for message from receiver
         sem_wait(&queuesEmpty);
         // lock for mutual exclusion mutex
+
         pthread_mutex_lock(&mutualExclusionVideo);
         // go through the queue to find message to send
         int foundMessage = 0;
@@ -567,13 +598,25 @@ void *senderFunction()
                 // if message is here
                 if (others_services_queue[i].isMessageHere == 1)
                 {
-                    
-                    // message can either be registration or data request
+
+                    // message can either be registration or data request OR BACKOFFICE COMMAND
                     if (others_services_queue[i].isRegistration == 1)
                     {
                         // send message to Authorization Engine
                         char messageToSend[256];
                         sprintf(messageToSend, "%d#%s#%d", others_services_queue[i].userID, "registration", others_services_queue[i].dataToReserve);
+                        if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                        {
+                            errorHandler("Not possible to write to Authorization Engine pipe\n");
+                        }
+                        // remove message from queue
+                        others_services_queue[i].isMessageHere = 0;
+                    }
+                    else if (strcmp(others_services_queue[i].category, "data_stats") == 0 || strcmp(others_services_queue[i].category, "reset") == 0)
+                    {
+                        // send message to Authorization Engine
+                        char messageToSend[256];
+                        sprintf(messageToSend, "%d#%s#%d", others_services_queue[i].userID, others_services_queue[i].category, others_services_queue[i].dataToReserve);
                         if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
                         {
                             errorHandler("Not possible to write to Authorization Engine pipe\n");
@@ -732,20 +775,20 @@ void *receiverFunction()
             // lock for mutual exclusion mutex
             pthread_mutex_lock(&mutualExclusionVideo);
 
-            if (count == 1 || strcmp(newMessage->category, "MUSIC") == 1 || strcmp(newMessage->category, "SOCIAL") == 1)
+            if (count == 1 || strcmp(newMessage->category, "MUSIC") == 0 || strcmp(newMessage->category, "SOCIAL") == 0)
             {
+
                 for (int i = 0; i < queue_pos; i++)
                 {
                     if (others_services_queue[i].isMessageHere == 0)
                     {
-                        printf("Adding message to others services queue\n");
                         others_services_queue[i] = *newMessage;
                         others_services_queue[i].isMessageHere = 1;
                         break;
                     }
                 }
             }
-            else if (strcmp(newMessage->category, "VIDEO") == 1)
+            else if (strcmp(newMessage->category, "VIDEO") == 0)
             {
                 for (int i = 0; i < queue_pos; i++)
                 {
