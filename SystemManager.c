@@ -96,10 +96,10 @@ void errorHandler(char *errorMessage)
         fclose(configFile);
     }
     // Threads
-    pthread_cancel(senderThread);
-    pthread_cancel(receiverThread);
-    pthread_join(senderThread, NULL);
-    pthread_join(receiverThread, NULL);
+    // pthread_cancel(senderThread);
+    // pthread_cancel(receiverThread);
+    // pthread_join(senderThread, NULL);
+    // pthread_join(receiverThread, NULL);
 
     // Shared Memory
     shmdt(shm);
@@ -125,7 +125,7 @@ void errorHandler(char *errorMessage)
     sem_unlink("SHM_SEM");
     sem_unlink("AUTH_ENGINE_SEM");
     sem_unlink("SHM_CHANGES_SEM");
-    sem_unlink("EXTRA_AUTH_ENGINE_VERIFIER");
+    sem_unlink("EXTRA_AUTH_ENGINE_SEM");
     // Named Pipes
     close(fdUserPipe);
     unlink("USER_PIPE");
@@ -153,6 +153,7 @@ void handleSigterm(int sig)
         // cancel stats thread
         pthread_cancel(statsThread);
         pthread_join(statsThread, NULL);
+        writeToLog("MONITOR ENGINE CLOSING");
         exit(0);
     }
     else if (getpid() == authRequestManagerPid)
@@ -167,7 +168,7 @@ void handleSigterm(int sig)
             {
                 if (shm->authEngines[i].pid != 0)
                 {
-                    signal(shm->authEngines[i].pid, SIGTERM);
+                    kill(shm->authEngines[i].pid, SIGTERM);
                     waitpid(shm->authEngines[i].pid, NULL, 0);
                 }
             }
@@ -184,10 +185,32 @@ void handleSigterm(int sig)
             }
         }
         sem_post(shmSem);
+        printf("posdjfsikfjsr\n");
+        // printf("Now, canceling threads\n");
         pthread_cancel(receiverThread);
         pthread_join(receiverThread, NULL);
         pthread_cancel(senderThread);
         pthread_join(senderThread, NULL);
+        printf("Somebody\n");
+
+        // print all the tasks that were left on the queues
+        // for (int i = 0; i < queue_pos; i++)
+        // {
+        //     if (video_streaming_queue[i].isMessageHere == 1)
+        //     {
+        //         char messageToSend[256];
+        //         sprintf(messageToSend, "IN VIDEO_QUEUE[%d]: %s %d ", i, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
+        //         writeToLog(messageToSend);
+        //     }
+        //     if (others_services_queue[i].isMessageHere == 1)
+        //     {
+        //         char messageToSend[256];
+        //         sprintf(messageToSend, "IN OTHERS QUEUE[%d]: %s %d ", i, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
+        //         writeToLog(messageToSend);
+        //     }
+        // }
+        writeToLog("AUTHORIZATION REQUESTS MANAGER CLOSING");
+        printf("Ekmfvldfmvmfdvfd\n");
         exit(0);
     }
     else
@@ -200,22 +223,18 @@ void handleSigterm(int sig)
 void handleSigInt(int sig)
 {
     writeToLog("Signal SIGINT received");
-    signal(authRequestManagerPid, SIGTERM);
-    signal(monitorEnginePid, SIGTERM);
-    // Authorization Engine processes
-    // if pid is different from the original pid, exit(0)
-
-    writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
+    kill(authRequestManagerPid, SIGTERM);
+    waitpid(authRequestManagerPid, NULL, 0);
+    printf("TESTE\n");
+    kill(monitorEnginePid, SIGTERM);
+    waitpid(monitorEnginePid, NULL, 0);
+    printf("TESTE1\n");
 
     if (configFile != NULL)
     {
         fclose(configFile);
     }
     // Threads
-    pthread_cancel(senderThread);
-    pthread_cancel(receiverThread);
-    pthread_join(senderThread, NULL);
-    pthread_join(receiverThread, NULL);
 
     // Shared Memory
     shmdt(shm);
@@ -231,6 +250,7 @@ void handleSigInt(int sig)
 
     free(authEnginePipes);
 
+    writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
     // Semaphores
     sem_close(logSem);
     sem_close(shmSem);
@@ -241,7 +261,7 @@ void handleSigInt(int sig)
     sem_unlink("SHM_SEM");
     sem_unlink("AUTH_ENGINE_SEM");
     sem_unlink("SHM_CHANGES_SEM");
-    sem_unlink("EXTRA_AUTH_ENGINE_VERIFIER");
+    sem_unlink("EXTRA_AUTH_ENGINE_SEM");
     sem_destroy(&queuesEmpty);
     // Named Pipes
     close(fdUserPipe);
@@ -250,6 +270,9 @@ void handleSigInt(int sig)
     unlink("BACK_PIPE");
     // Queues
     free(video_streaming_queue);
+    free(others_services_queue);
+
+    printf("TESTE3\n");
 
     // free(others_services_queue);
     // Mutex
@@ -259,7 +282,8 @@ void handleSigInt(int sig)
     msgctl(mQueueId, IPC_RMID, NULL);
 
     // Log File
-    fclose(logFile);
+    if (logFile != NULL)
+        fclose(logFile);
 
     exit(0);
 }
@@ -347,7 +371,7 @@ void syncCreator()
     {
         errorHandler("ERROR: Not possible to create shared memory changes semaphore\n");
     }
-    extraAuthEngineSem = sem_open("EXTRA_AUTH_ENGINE_VERIFIER", O_CREAT | O_EXCL, 0700, 0);
+    extraAuthEngineSem = sem_open("EXTRA_AUTH_ENGINE_SEM", O_CREAT | O_EXCL, 0700, 0);
     if (extraAuthEngineSem == SEM_FAILED)
     {
         errorHandler("ERROR: Not possible to create extra auth engine verifier semaphore\n");
@@ -402,7 +426,10 @@ void authEngineFunction(int index)
     {
         if ((readValue = read(authEnginePipes[index][0], &messageToRead, sizeof(messageToRead))) <= 0)
         {
-            errorHandler("ERROR: Not possible to read from Authorization Engine pipe\n");
+            if (timeToDie != 1)
+                errorHandler("ERROR: Not possible to read from Authorization Engine pipe\n");
+            else
+                break;
         }
         messageToRead[readValue] = '\0';
         char messageToSend[256];
@@ -450,6 +477,8 @@ void authEngineFunction(int index)
                         shm->users[i].videoUsed = 0;
                         shm->users[i].originalPlafond = atoi(tokens[2]);
                         shm->users[i].wasNotified = 0;
+                        sprintf(messageToSend, "[AE]: USER %d REGISTERED", atoi(tokens[0]));
+                        writeToLog(messageToSend);
                         break;
                     }
                     else if (i == mobile_users - 1) // if we reach the end of the array and no empty user is found, we discard the message
@@ -542,13 +571,14 @@ void authEngineFunction(int index)
             sem_post(shmChangesSem);
             sem_post(shmSem);
             sem_post(authEngineAvailableSem);
-
         }
         else
         {
             errorHandler("ERROR: Received invalid message format from sender\n");
         }
     }
+    sprintf(messageToSend, "AUTHORIZATION ENGINE %d CLOSING", index);
+    writeToLog(messageToSend);
     exit(0);
 }
 
@@ -639,6 +669,9 @@ void authEngineCreator()
 }
 void *senderFunction()
 {
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
     writeToLog("SENDER THREAD CREATED");
 
     while (1)
@@ -936,6 +969,9 @@ int userExists(int IDtoCheck)
 }
 void *receiverFunction()
 {
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
     writeToLog("RECEIVER THREAD CREATED");
     int readValue;
     char messageToRead[256];
@@ -1294,10 +1330,12 @@ int main(int argc, char *argv[])
     sem_unlink("SHM_SEM");
     sem_unlink("AUTH_ENGINE_SEM");
     sem_unlink("SHM_CHANGES_SEM");
+    sem_unlink("EXTRA_AUTH_ENGINE_SEM");
     pthread_mutex_destroy(&mutualExclusion);
     // unlink named pipes
     unlink("USER_PIPE");
     unlink("BACK_PIPE");
+
     msgctl(mQueueId, IPC_RMID, NULL);
     shmctl(shmid, IPC_RMID, NULL);
 
