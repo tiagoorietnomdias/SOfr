@@ -53,8 +53,9 @@ int fdUserPipe;
 char messageToSend[128];
 int currentRequests = 0;
 int initialPlafond, n_reqs, intervalVideo, intervalMusic, intervalSocial, dataToReserve;
-sem_t *mobile_sem;
+sem_t *mobile_sem, finished_sem;
 int mQueueID;
+pthread_t musicThread, socialThread, videoThread, mQueueThread;
 typedef struct mQMessage
 {
     long mtype;
@@ -62,23 +63,44 @@ typedef struct mQMessage
 } mQMessage;
 void handleSigInt(int sig)
 {
-    sem_unlink("MOBILE_SEM");
     // delete message queue
     printf("Received SIGINT\n");
+    pthread_cancel(socialThread);
+    pthread_join(socialThread, NULL);
+    pthread_cancel(musicThread);
+    pthread_join(musicThread, NULL);
+    pthread_cancel(videoThread);
+    pthread_join(videoThread, NULL);
+    pthread_cancel(mQueueThread);
+    pthread_join(mQueueThread, NULL);
+    sem_unlink("MOBILE_SEM");
+    sem_destroy(&finished_sem);
 
     exit(0);
 }
 void exitSafely()
 {
+
+    pthread_cancel(socialThread);
+    pthread_join(socialThread, NULL);
+    pthread_cancel(musicThread);
+    pthread_join(musicThread, NULL);
+    pthread_cancel(videoThread);
+    pthread_join(videoThread, NULL);
+    pthread_cancel(mQueueThread);
+    pthread_join(mQueueThread, NULL);
     sem_unlink("MOBILE_SEM");
-    // delete message queue
-    // msgctl(mQueueID, IPC_RMID, NULL);
-    exit(1);
+    sem_destroy(&finished_sem);
+    exit(0);
 }
 void writeToPipe(char *category)
 {
     sprintf(messageToSend, "%d#%s#%d", getpid(), category, dataToReserve);
-    write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
+    if (write(fdUserPipe, messageToSend, strlen(messageToSend) + 1) == -1)
+    {
+        printf("Error writing to pipe\n");
+        sem_post(&finished_sem);
+    }
     currentRequests++;
 }
 void *socialFunction()
@@ -90,6 +112,12 @@ void *socialFunction()
         writeToPipe("SOCIAL");
         sem_post(mobile_sem);
     }
+    if (currentRequests == n_reqs)
+    {
+        printf("Max requests sent..Exiting\n");
+        sem_post(&finished_sem);
+    }
+
     return NULL;
 }
 void *musicFunction()
@@ -101,6 +129,11 @@ void *musicFunction()
         writeToPipe("MUSIC");
         sem_post(mobile_sem);
     }
+    if (currentRequests == n_reqs)
+    {
+        printf("Max requests sent..Exiting\n");
+        sem_post(&finished_sem);
+    }
     return NULL;
 }
 void *videoFunction()
@@ -111,6 +144,11 @@ void *videoFunction()
         sem_wait(mobile_sem);
         writeToPipe("VIDEO");
         sem_post(mobile_sem);
+    }
+    if (currentRequests == n_reqs)
+    {
+        printf("Max requests sent..Exiting\n");
+        sem_post(&finished_sem);
     }
     return NULL;
 }
@@ -126,11 +164,17 @@ void *mQueueFunction()
 
     while (1)
     {
+        int erm = 0;
         mQMessage mQMessage;
         if (msgrcv(mQueueID, &mQMessage, sizeof(mQMessage), getpid(), 0) == -1)
         {
-            printf("Message queue no longer available\n");
-            exitSafely();
+            printf("Message queue was disconnected\n");
+            erm = 1;
+        }
+        if (erm)
+        {
+            sem_post(&finished_sem);
+            break;
         }
 #ifdef DEBUG
         printf("ID: %ld\n", mQMessage.mtype);
@@ -150,14 +194,15 @@ void *mQueueFunction()
         {
             // 100%
             printf("Received 100%% alert\n");
-            exitSafely();
+            sem_post(&finished_sem);
         }
     }
+    return NULL;
 }
 int main(int argc, char *argv[])
 {
     sem_unlink("MOBILE_SEM");
-    pthread_t musicThread, socialThread, videoThread, mQueueThread;
+
     // Semaforo para escrita no pipe
 
     struct sigaction ctrlc;
@@ -185,13 +230,6 @@ int main(int argc, char *argv[])
         exit(1);
     }
 
-    printf("Initial plafond: %d\n", initialPlafond);
-    printf("Number of requests: %d\n", n_reqs);
-    printf("Interval Video: %d\n", intervalVideo);
-    printf("Interval Music: %d\n", intervalMusic);
-    printf("Interval Social: %d\n", intervalSocial);
-    printf("Data to reserve: %d\n", dataToReserve);
-
     // Open named pipe
     if ((fdUserPipe = open("USER_PIPE", O_WRONLY)) < 0)
     {
@@ -204,11 +242,22 @@ int main(int argc, char *argv[])
         printf("ERROR: Not possible to create mobile_sem semaphore\n");
         exit(1);
     }
+    if (sem_init(&finished_sem, 0, 0) == -1)
+    {
+        perror("Could not initialize semaphore");
+        return 1;
+    }
 
     // write to pipe
     // Register message
     sprintf(messageToSend, "%d#%d", getpid(), initialPlafond);
-    write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
+    // write(fdUserPipe, messageToSend, strlen(messageToSend) + 1);
+    // write can fail
+    if (write(fdUserPipe, messageToSend, strlen(messageToSend) + 1) == -1)
+    {
+        printf("Error writing to pipe\n");
+        sem_post(&finished_sem);
+    }
     // Thread creation, one for each service
     // Social
     if (pthread_create(&socialThread, NULL, socialFunction, NULL) != 0)
@@ -234,7 +283,8 @@ int main(int argc, char *argv[])
         printf("Not able to create thread mQueue");
         exit(1);
     }
-    pause();
+    sem_wait(&finished_sem);
+    exitSafely();
 
     return 0;
 }

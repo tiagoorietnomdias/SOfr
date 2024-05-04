@@ -81,12 +81,10 @@ void *readFromQueue()
             printf("Error receiving message from queue\n");
             exit(1);
         }
-        printf("Total Requests Music: %d\n", message.stats.totalRequestsMusic);
-        printf("Number of Requests Music: %d\n", message.stats.nRequestsMusic);
-        printf("Total Requests Social: %d\n", message.stats.totalRequestsSocial);
-        printf("Number of Requests Social: %d\n", message.stats.nRequestsSocial);
-        printf("Total Requests Video: %d\n", message.stats.totalRequestsVideo);
-        printf("Number of Requests Video: %d\n", message.stats.nRequestsVideo);
+        printf("Service\t Total Data\t Auth Reqs\n\n");
+        printf("Video\t\t%d\t\t%d\n", message.stats.totalRequestsVideo, message.stats.nRequestsVideo);
+        printf("Music\t\t%d\t\t%d\n", message.stats.totalRequestsMusic, message.stats.nRequestsMusic);
+        printf("Social\t\t%d\t\t%d\n", message.stats.totalRequestsSocial, message.stats.nRequestsSocial);
     }
 }
 int main()
@@ -103,6 +101,7 @@ int main()
     if ((fdBackPipe = open("BACK_PIPE", O_WRONLY)) < 0)
     {
         printf("Error opening BACK_PIPE\n");
+        exit(1);
     }
     // Create reading thread for message queue
     pthread_create(&queueThread, NULL, readFromQueue, NULL);
@@ -117,13 +116,13 @@ int main()
             {
                 sprintf(command, "%d#%s", backOfficeUserID, "data_stats");
                 write(fdBackPipe, command, strlen(command) + 1);
-                printf("printing data stats\n");
+                printf("Data stats:\n\n");
             }
             else if (strcmp(command, "reset") == 0)
             {
                 sprintf(command, "%d#%s", backOfficeUserID, "reset");
                 write(fdBackPipe, command, strlen(command) + 1);
-                printf("resetting\n");
+                printf("Resetting stats\n\n");
             }
             else if (strcmp(command, "exit") == 0)
             {

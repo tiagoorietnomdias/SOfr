@@ -28,6 +28,7 @@ typedef struct engines
 
 typedef struct sharedMemory
 {
+    int extraVerifier;
     // array de authorization engine available
     engines *authEngines;
     // array de utilizadores
