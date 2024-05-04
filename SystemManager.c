@@ -5,25 +5,11 @@
 //  Captura o sinal SIGINT para terminar o programa, libertando antes todos os recursos.
 /*O ficheiro de configurações deverá seguir a seguinte estrutura:
 MOBILE USERS (>=1) - número de Mobile Users que podem ser lançados
-QUEUE_POS(>=0) - número de slots nas filas que são utilizadas para armazenar os pedidos de autorização
-e os comandos dos utilizadores
-AUTH_SERVERS_MAX  (>=1)- número máximo de Authorization Engines que podem ser lançados
-AUTH_PROC_TIME -(>=0) período (em ms) que o Authorization Engine demora para processar os pedidos
-MAX_VIDEO_WAIT -(>=1) tempo máximo (em ms) que os pedidos de autorização do serviço de vídeo podem
-aguardar para serem executados (>=1)
-MAX_OTHERS_WAIT (>=1)- tempo máximo (em ms) que os pedidos de autorização dos serviços de música e
-de redes sociais, bem como os comandos podem aguardar para serem executados (>=1)*/
-/*Auth request manager:
-• Cria os named pipes USER_PIPE e BACK_PIPE
-• Cria os unnamed pipes para cada Authorization Engine
-• Cria as threads Receiver e Sender
-• Cria as estruturas de dados internas: Video_Streaming_Queue e Others_Services_Queue
-• Criação e remoção dos processos Authorization Engine de acordo com a taxa de ocupação
-das filas*/
-/* Receiver escreve nas queues e sender lê das queues. Sender vê se há authorization engines disponíveis e, se houver,
-escolhe 1 para processar o pedido. Sendar lê da queue e escreve no pipe do authorization engine. Authorization engine lê do pipe
-e atualiza a shared memory.
-*/
+QUEUE_POS(>=0) -
+AUTH_SERVERS_MAX  (>=1)
+AUTH_PROC_TIME -(>=0)
+MAX_VIDEO_WAIT -(>=1)
+MAX_OTHERS_WAIT(>=1)*/
 
 // #define DEBUG
 
@@ -59,7 +45,7 @@ sharedMemory *shm;
 int fdUserPipe, fdBackPipe;
 userMessage *video_streaming_queue, *others_services_queue;
 int (*authEnginePipes)[2];
-int extraSemValue;
+int extraSemValue, timeToDie = 0;
 void writeToLog(char *message)
 {
     time_t now = time(NULL);
@@ -160,42 +146,65 @@ void errorHandler(char *errorMessage)
 
     exit(0);
 }
-void handleSigInt(int sig)
+void handleSigterm(int sig)
 {
-    if (getpid() != originalPid && getpid() != authRequestManagerPid && getpid() != monitorEnginePid)
+    if (getpid() == monitorEnginePid)
     {
-        exit(0);
-    }
-    else if (getpid() == authRequestManagerPid)
-    {
-        sem_wait(shmSem);
-        for (int i = 0; i < auth_servers_max; i++)
-        {
-            if (shm->authEngines[i].pid != 0)
-            {
-#ifdef DEBUG
-                printf("Waiting for auth engine %d\n", i);
-#endif
-                waitpid(shm->authEngines[i].pid, NULL, 0);
-            }
-        }
-        sem_post(shmSem);
-        exit(0);
-    }
-    else if (getpid() == monitorEnginePid)
-    {
+        // cancel stats thread
         pthread_cancel(statsThread);
         pthread_join(statsThread, NULL);
         exit(0);
     }
+    else if (getpid() == authRequestManagerPid)
+    {
+        // if it is authRequestManager
+        // wait for all auth engines to finish and receiver and sender threads
+        sem_wait(shmSem);
+        // there may be an extra auth engine running
+        if (shm->extraVerifier == 1 || shm->extraVerifier == 2)
+        {
+            for (int i = 0; i < auth_servers_max + 1; i++)
+            {
+                if (shm->authEngines[i].pid != 0)
+                {
+                    signal(shm->authEngines[i].pid, SIGTERM);
+                    waitpid(shm->authEngines[i].pid, NULL, 0);
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < auth_servers_max; i++)
+            {
+                if (shm->authEngines[i].pid != 0)
+                {
+                    kill(shm->authEngines[i].pid, SIGTERM);
+                    waitpid(shm->authEngines[i].pid, NULL, 0);
+                }
+            }
+        }
+        sem_post(shmSem);
+        pthread_cancel(receiverThread);
+        pthread_join(receiverThread, NULL);
+        pthread_cancel(senderThread);
+        pthread_join(senderThread, NULL);
+        exit(0);
+    }
     else
     {
-        waitpid(authRequestManagerPid, NULL, 0);
-        waitpid(monitorEnginePid, NULL, 0);
+        // if it is an auth engine
+        timeToDie = 1;
     }
+}
+
+void handleSigInt(int sig)
+{
+    writeToLog("Signal SIGINT received");
+    signal(authRequestManagerPid, SIGTERM);
+    signal(monitorEnginePid, SIGTERM);
     // Authorization Engine processes
     // if pid is different from the original pid, exit(0)
-    writeToLog("SIGINT received");
+
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
 
     if (configFile != NULL)
@@ -328,7 +337,7 @@ void syncCreator()
     }
     // Semaforo para a fila de video
     sem_init(&queuesEmpty, 0, 0);
-    // Zona de exclusão mútua
+    // Zona de exclusão mútuaj
     if (pthread_mutex_init(&mutualExclusion, NULL) != 0)
     {
         errorHandler("ERROR: Not possible to create mutual exclusion mutex\n");
@@ -389,13 +398,16 @@ void authEngineFunction(int index)
     // wait for message from sender
     char messageToRead[256];
     int readValue;
-    while (1)
+    while (!timeToDie)
     {
         if ((readValue = read(authEnginePipes[index][0], &messageToRead, sizeof(messageToRead))) <= 0)
         {
             errorHandler("ERROR: Not possible to read from Authorization Engine pipe\n");
         }
         messageToRead[readValue] = '\0';
+        char messageToSend[256];
+        sprintf(messageToSend, "[AE] %d received message", index);
+        writeToLog(messageToSend);
         sleep(auth_proc_time);
 #ifdef DEBUG
         printf("[AE] %d: %s\n", index, messageToRead);
@@ -480,52 +492,64 @@ void authEngineFunction(int index)
                 {
                     if (shm->users[i].userID == atoi(tokens[0]))
                     {
-                        shm->users[i].currentPlafond -= atoi(tokens[2]);
-                        if (strcmp(tokens[1], "MUSIC") == 0)
+                        // if the user's plafond isnt enought to fulfill the request, we discard the message and write to the log
+                        if (shm->users[i].currentPlafond < atoi(tokens[2]))
                         {
-                            shm->users[i].musicUsed += atoi(tokens[2]);
-                            shm->stats.totalRequestsMusic += atoi(tokens[2]);
-                            shm->stats.nRequestsMusic++;
-                            sprintf(messageToSend, "AUTHORIZATION_ENGINE %d:MUSIC AUTHORIZATION REQUEST (ID = %d) PROCESSING COMPLETED", index, atoi(tokens[0]));
+                            sprintf(messageToSend, "[AE] %d:REQUEST (ID = %d) DISCARDED NOT ENOUGH PLAFOND", index, atoi(tokens[0]));
                             writeToLog(messageToSend);
-                        }
-                        else if (strcmp(tokens[1], "SOCIAL") == 0)
-                        {
-                            shm->users[i].socialUsed += atoi(tokens[2]);
-                            shm->stats.totalRequestsSocial += atoi(tokens[2]);
-                            shm->stats.nRequestsSocial++;
-                            sprintf(messageToSend, "AUTHORIZATION_ENGINE %d:SOCIAL AUTHORIZATION REQUEST (ID = %d) PROCESSING COMPLETED", index, atoi(tokens[0]));
-                            writeToLog(messageToSend);
-                        }
-                        else if (strcmp(tokens[1], "VIDEO") == 0)
-                        {
-                            shm->users[i].videoUsed += atoi(tokens[2]);
-                            shm->stats.totalRequestsVideo += atoi(tokens[2]);
-                            shm->stats.nRequestsVideo++;
-                            sprintf(messageToSend, "AUTHORIZATION_ENGINE %d:VIDEO AUTHORIZATION REQUEST (ID = %d) PROCESSING COMPLETED", index, atoi(tokens[0]));
-                            writeToLog(messageToSend);
+                            break;
                         }
                         else
                         {
-                            errorHandler("ERROR: Received invalid category from sender\n");
+                            shm->users[i].currentPlafond -= atoi(tokens[2]);
+                            if (strcmp(tokens[1], "MUSIC") == 0)
+                            {
+                                shm->users[i].musicUsed += atoi(tokens[2]);
+                                shm->stats.totalRequestsMusic += atoi(tokens[2]);
+                                shm->stats.nRequestsMusic++;
+                                sprintf(messageToSend, "[AE] %d:MUSIC AUTH REQ (ID = %d) COMPLETED", index, atoi(tokens[0]));
+                                writeToLog(messageToSend);
+                            }
+                            else if (strcmp(tokens[1], "SOCIAL") == 0)
+                            {
+                                shm->users[i].socialUsed += atoi(tokens[2]);
+                                shm->stats.totalRequestsSocial += atoi(tokens[2]);
+                                shm->stats.nRequestsSocial++;
+                                sprintf(messageToSend, "[AE] %d:SOCIAL AUTH REQ (ID = %d) COMPLETED", index, atoi(tokens[0]));
+                                writeToLog(messageToSend);
+                            }
+                            else if (strcmp(tokens[1], "VIDEO") == 0)
+                            {
+                                shm->users[i].videoUsed += atoi(tokens[2]);
+                                shm->stats.totalRequestsVideo += atoi(tokens[2]);
+                                shm->stats.nRequestsVideo++;
+                                sprintf(messageToSend, "[AE] %d:VIDEO AUTH REQ (ID = %d) COMPLETED", index, atoi(tokens[0]));
+                                writeToLog(messageToSend);
+                            }
+                            else
+                            {
+                                errorHandler("ERROR: Received invalid category from sender\n");
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
             // mark this auth engine as available
             shm->authEngines[index].available = 1;
-            sprintf(messageToSend, "AUTHORIZATION ENGINE %d AVAILABLE", index);
+            sprintf(messageToSend, "[AE] %d AVAILABLE", index);
             writeToLog(messageToSend);
             sem_post(shmChangesSem);
             sem_post(shmSem);
             sem_post(authEngineAvailableSem);
+
         }
         else
         {
             errorHandler("ERROR: Received invalid message format from sender\n");
         }
     }
+    exit(0);
 }
 
 void authEngineCreator()
@@ -558,8 +582,13 @@ void authEngineCreator()
         }
         if (pid == 0)
         {
+            // setup sigTerm handler
+            struct sigaction sigterm;
+            sigterm.sa_handler = handleSigterm;
+            sigfillset(&sigterm.sa_mask);
+            sigterm.sa_flags = 0;
+            sigaction(SIGTERM, &sigterm, NULL);
             // child process
-            // add pid to shared memory
             sem_wait(shmSem);
             shm->authEngines[i].pid = getpid();
             sem_post(shmSem);
@@ -633,7 +662,7 @@ void *senderFunction()
                     shm->authEngines[i].available = 0;
                     index = i;
                     char messageToSend[256];
-                    sprintf(messageToSend, "AUTHORIZATION ENGINE %d BUSY", i);
+                    sprintf(messageToSend, "[AE] %d BUSY", i);
                     writeToLog(messageToSend);
                     break;
                 }
@@ -653,7 +682,7 @@ void *senderFunction()
                     shm->authEngines[i].available = 0;
                     index = i;
                     char messageToSend[256];
-                    sprintf(messageToSend, "AUTHORIZATION ENGINE %d BUSY", i);
+                    sprintf(messageToSend, "[S]: FOUND AVAILABLE [AE]: %d ", i);
                     writeToLog(messageToSend);
                     break;
                 }
@@ -661,9 +690,19 @@ void *senderFunction()
         }
         sem_post(shmSem);
         // wait for message from receiver
-        sem_wait(&queuesEmpty);
-        // lock for mutual exclusion mutex
 
+        sem_getvalue(&queuesEmpty, &extraSemValue);
+#ifdef DEBUG
+        printf("value of queueEmpty semaphore: %d\n", extraSemValue);
+#endif
+        sem_wait(&queuesEmpty);
+// lock for mutual exclusion mutex
+#ifdef DEBUG
+        if (index == -1)
+        {
+            printf("\nindex is -1\n");
+        }
+#endif
         pthread_mutex_lock(&mutualExclusion);
         // go through the queue to find message to send
         int foundMessage = 0;
@@ -672,16 +711,34 @@ void *senderFunction()
             if (video_streaming_queue[i].isMessageHere == 1)
             {
                 foundMessage = 1;
-                // send message to Authorization Engine
-                char messageToSend[256];
-                sprintf(messageToSend, "%d#%s#%d", video_streaming_queue[i].userID, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
-                if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                // check if message has not expired (if time video wait hasnt passed)
+                if (video_streaming_queue[i].timeOfRequest + max_video_wait < time(NULL))
                 {
-                    errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
+                    char messageToSend[256];
+                    sprintf(messageToSend, "[S]: VIDEO ID %d EXPIRED", video_streaming_queue[i].userID);
+                    writeToLog(messageToSend);
+                    video_streaming_queue[i].isMessageHere = 0;
+                    sem_post(authEngineAvailableSem);
+                    sem_wait(shmSem);
+                    shm->authEngines[index].available = 1;
+                    sem_post(shmSem);
+                    break;
                 }
-                // remove message from queue
-                video_streaming_queue[i].isMessageHere = 0;
-                break;
+                else
+                {
+                    // send message to Authorization Engine
+                    char messageToSend[256];
+                    sprintf(messageToSend, "%d#%s#%d", video_streaming_queue[i].userID, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
+                    if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                    {
+                        errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
+                    }
+                    sprintf(messageToSend, "[S]: SENT TO [AE] %d: %s", index, video_streaming_queue[i].category);
+                    writeToLog(messageToSend);
+                    // remove message from queue
+                    video_streaming_queue[i].isMessageHere = 0;
+                    break;
+                }
             }
         }
         if (!foundMessage)
@@ -702,32 +759,72 @@ void *senderFunction()
                         {
                             errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
                         }
+                        sprintf(messageToSend, "[S]: SENT TO [AE] %d: %s", index, others_services_queue[i].category);
+                        writeToLog(messageToSend);
                         // remove message from queue
                         others_services_queue[i].isMessageHere = 0;
+                        break;
                     }
                     else if (strcmp(others_services_queue[i].category, "data_stats") == 0 || strcmp(others_services_queue[i].category, "reset") == 0)
                     {
-                        // send message to Authorization Engine
-                        char messageToSend[256];
-                        sprintf(messageToSend, "%d#%s#%d", others_services_queue[i].userID, others_services_queue[i].category, others_services_queue[i].dataToReserve);
-                        if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                        if (others_services_queue[i].timeOfRequest + max_others_wait < time(NULL))
                         {
-                            errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
+                            char messageToSend[256];
+                            sprintf(messageToSend, "[S]: BACKOFFICE ID %d EXPIRED", others_services_queue[i].userID);
+                            writeToLog(messageToSend);
+                            video_streaming_queue[i].isMessageHere = 0;
+                            sem_post(authEngineAvailableSem);
+                            sem_wait(shmSem);
+                            shm->authEngines[index].available = 1;
+                            sem_post(shmSem);
+                            break;
                         }
-                        // remove message from queue
-                        others_services_queue[i].isMessageHere = 0;
+                        else
+                        {
+                            // send message to Authorization Engine
+                            char messageToSend[256];
+                            sprintf(messageToSend, "%d#%s#%d", others_services_queue[i].userID, others_services_queue[i].category, others_services_queue[i].dataToReserve);
+                            if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                            {
+                                errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
+                            }
+                            // say to log
+                            sprintf(messageToSend, "[S]: SENT TO [AE] %d: %s", index, others_services_queue[i].category);
+                            writeToLog(messageToSend);
+                            // remove message from queue
+                            others_services_queue[i].isMessageHere = 0;
+                            break;
+                        }
                     }
                     else
                     {
-                        // send message to Authorization Engine
-                        char messageToSend[256];
-                        sprintf(messageToSend, "%d#%s#%d", others_services_queue[i].userID, others_services_queue[i].category, others_services_queue[i].dataToReserve);
-                        if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                        if (others_services_queue[i].timeOfRequest + max_others_wait < time(NULL))
                         {
-                            errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
+                            char messageToSend[256];
+                            sprintf(messageToSend, "[S]: OTHER SERVICE %d EXPIRED", others_services_queue[i].userID);
+                            writeToLog(messageToSend);
+                            others_services_queue[i].isMessageHere = 0;
+                            sem_post(authEngineAvailableSem);
+                            sem_wait(shmSem);
+                            shm->authEngines[index].available = 1;
+                            sem_post(shmSem);
+                            break;
                         }
-                        // remove message from queue
-                        others_services_queue[i].isMessageHere = 0;
+                        else
+                        {
+                            // send message to Authorization Engine
+                            char messageToSend[256];
+                            sprintf(messageToSend, "%d#%s#%d", others_services_queue[i].userID, others_services_queue[i].category, others_services_queue[i].dataToReserve);
+                            if (write(authEnginePipes[index][1], messageToSend, sizeof(messageToSend)) <= 0)
+                            {
+                                errorHandler("ERROR: Not possible to write to Authorization Engine pipe\n");
+                            }
+                            sprintf(messageToSend, "[S]: SENT TO [AE] %d: %s", index, others_services_queue[i].category);
+                            writeToLog(messageToSend);
+                            // remove message from queue
+                            others_services_queue[i].isMessageHere = 0;
+                            break;
+                        }
                     }
                 }
             }
@@ -753,6 +850,9 @@ void *senderFunction()
                     shm->extraVerifier = 1;
                 }
             }
+#ifdef DEBUG
+            printf("Video queue count = %d\n", count);
+#endif
             // check if others queue is full
             count = 0;
             for (int i = 0; i < queue_pos; i++)
@@ -770,6 +870,9 @@ void *senderFunction()
                     shm->extraVerifier = 2;
                 }
             }
+#ifdef DEBUG
+            printf("Others queue count = %d\n", count);
+#endif
         }
         else if (shm->extraVerifier == 1)
         { // means video queue is full and an extra authEngine was created so we check to see if it now half-full
@@ -902,7 +1005,7 @@ void *receiverFunction()
                         printf("Added message from BackOffice to others services queue\n");
 #endif
                         char messageToSend[256];
-                        sprintf(messageToSend, "RECEIVER: ADDED MESSAGE FROM BACKOFFICE USER TO OTHERS SERVICES QUEUE INDEX %d\n", i);
+                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM BACKOFFICE USER TO OTHERS SERVICES QUEUE INDEX %d\n", i);
                         writeToLog(messageToSend);
                         sem_post(&queuesEmpty);
                         break;
@@ -961,9 +1064,11 @@ void *receiverFunction()
                         others_services_queue[i] = *newMessage;
                         others_services_queue[i].isMessageHere = 1;
                         char messageToSend[256];
-                        sprintf(messageToSend, "RECEIVER: ADDED MESSAGE FROM MOBILE USER TO OTHERS SERVICES QUEUE INDEX %d\n", i);
+                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM MOBILE USER TO OTHERS SERVICES QUEUE INDEX %d\n", i);
                         writeToLog(messageToSend);
                         found = 1;
+                        sem_post(&queuesEmpty);
+
                         break;
                     }
                 }
@@ -995,9 +1100,11 @@ void *receiverFunction()
                         video_streaming_queue[i] = *newMessage;
                         video_streaming_queue[i].isMessageHere = 1;
                         char messageToSend[256];
-                        sprintf(messageToSend, "RECEIVER: ADDED MESSAGE FROM MOBILE USER TO VIDEO STREAMING QUEUE INDEX %d\n", i);
+                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM MOBILE USER TO VIDEO STREAMING QUEUE INDEX %d\n", i);
                         writeToLog(messageToSend);
                         found = 1;
+                        sem_post(&queuesEmpty);
+
                         break;
                     }
                 }
@@ -1005,14 +1112,13 @@ void *receiverFunction()
                 if (!found)
                 {
                     char messageToSend[256];
-                    sprintf(messageToSend, "VIDEO QUEUE IS FULL, DISCARDING MESSAGE: %s#%s#%s\n", tokens[0], tokens[1], tokens[2]);
+                    sprintf(messageToSend, "[R]: VIDEO QUEUE IS FULL, DISCARDING MESSAGE: %s#%s#%s\n", tokens[0], tokens[1], tokens[2]);
                     writeToLog(messageToSend);
                 }
             }
 
             // unlock for mutual exclusion mutex
             pthread_mutex_unlock(&mutualExclusion);
-            sem_post(&queuesEmpty);
         }
     }
 
@@ -1220,7 +1326,9 @@ int main(int argc, char *argv[])
     auth_servers_max = config[2];
     auth_proc_time = config[3];
     max_video_wait = config[4];
+    max_video_wait = max_video_wait / 1000;
     max_others_wait = config[5];
+    max_others_wait = max_others_wait / 1000;
     writeToLog("5G_AUTH_PLATFORM SIMULATOR STARTING");
 
     authEnginePipes = malloc(sizeof(*authEnginePipes) * auth_servers_max + 1);
@@ -1241,9 +1349,14 @@ int main(int argc, char *argv[])
         errorHandler("ERROR: Not able to create Authorization Requests Manager");
     if (pid == 0)
     {
-
-        // signal(SIGINT, SIG_IGN);
         authRequestManagerPid = getpid();
+        signal(SIGINT, SIG_IGN);
+        struct sigaction sigterm;
+        sigterm.sa_handler = handleSigterm;
+        sigfillset(&sigterm.sa_mask);
+        sigterm.sa_flags = 0;
+        sigaction(SIGTERM, &sigterm, NULL);
+
         writeToLog("AUTHORIZATION REQUESTS MANAGER CREATED");
         authorizationRequestsManager();
     }
@@ -1255,6 +1368,13 @@ int main(int argc, char *argv[])
     if (pid == 0) //&& getpid() != authManagerPid
     {
         monitorEnginePid = getpid();
+        signal(SIGINT, SIG_IGN);
+        struct sigaction sigterm;
+        sigterm.sa_handler = handleSigterm;
+        sigfillset(&sigterm.sa_mask);
+        sigterm.sa_flags = 0;
+        sigaction(SIGTERM, &sigterm, NULL);
+
         writeToLog("MONITOR ENGINE CREATED");
         monitorEngine();
     }
