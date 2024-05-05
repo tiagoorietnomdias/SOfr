@@ -36,7 +36,7 @@ int config[5];
 int mobile_users, queue_pos, auth_servers_max, auth_proc_time, max_video_wait, max_others_wait;
 sem_t *logSem, *shmSem, *authEngineAvailableSem, *shmChangesSem, *extraAuthEngineSem;
 sem_t queuesEmpty;
-pid_t originalPid, authRequestManagerPid, monitorEnginePid;
+pid_t originalPid, authRequestManagerPid = 0, monitorEnginePid = 0;
 // mutual exclusion is now a pthread mutex
 pthread_mutex_t mutualExclusion;
 pthread_t senderThread, receiverThread, statsThread;
@@ -46,6 +46,7 @@ int fdUserPipe, fdBackPipe;
 userMessage *video_streaming_queue, *others_services_queue;
 int (*authEnginePipes)[2];
 int extraSemValue, timeToDie = 0;
+pid_t pid1, pid2;
 void writeToLog(char *message)
 {
     time_t now = time(NULL);
@@ -59,92 +60,8 @@ void writeToLog(char *message)
 void errorHandler(char *errorMessage)
 {
     writeToLog(errorMessage);
-
-    if (getpid() != originalPid && getpid() != authRequestManagerPid)
-    {
-        exit(0);
-    }
-    else if (getpid() == authRequestManagerPid)
-    {
-        sem_wait(shmSem);
-        for (int i = 0; i < auth_servers_max; i++)
-        {
-            // error can occur before auth engine is created therefore we need to check if pid is different from NULL
-            if (shm->authEngines[i].pid != 0)
-            {
-#ifdef DEBUG
-                printf("Waiting for auth engine %d\n", i);
-#endif
-                waitpid(shm->authEngines[i].pid, NULL, 0);
-            }
-        }
-        sem_post(shmSem);
-
-        exit(0);
-    }
-    else
-    {
-        waitpid(authRequestManagerPid, NULL, 0);
-    }
-    // Authorization Engine processes
-    // if pid is different from the original pid, exit(0)
-    writeToLog("SIGNAL SIGINT RECEIVED");
-    writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
-
-    if (configFile != NULL)
-    {
-        fclose(configFile);
-    }
-    // Threads
-    // pthread_cancel(senderThread);
-    // pthread_cancel(receiverThread);
-    // pthread_join(senderThread, NULL);
-    // pthread_join(receiverThread, NULL);
-
-    // Shared Memory
-    shmdt(shm);
-    shmctl(shmid, IPC_RMID, NULL);
-
-    // Authorization Engine pipes
-    for (int i = 0; i < auth_servers_max; i++)
-    {
-
-        close(authEnginePipes[i][0]);
-        close(authEnginePipes[i][1]);
-    }
-
-    free(authEnginePipes);
-
-    // Semaphores
-    sem_close(logSem);
-    sem_close(shmSem);
-    sem_close(authEngineAvailableSem);
-    sem_close(shmChangesSem);
-    sem_close(extraAuthEngineSem);
-    sem_unlink("LOG_SEM");
-    sem_unlink("SHM_SEM");
-    sem_unlink("AUTH_ENGINE_SEM");
-    sem_unlink("SHM_CHANGES_SEM");
-    sem_unlink("EXTRA_AUTH_ENGINE_SEM");
-    // Named Pipes
-    close(fdUserPipe);
-    unlink("USER_PIPE");
-    close(fdBackPipe);
-    unlink("BACK_PIPE");
-    // Queues
-    free(video_streaming_queue);
-    free(others_services_queue);
-
-    // Message Queue
-    msgctl(mQueueId, IPC_RMID, NULL);
-
-    // Mutex
-    pthread_mutex_destroy(&mutualExclusion);
-
-    // Log File
-    fclose(logFile);
-
-    exit(0);
+    // send sigint ro original process
+    kill(originalPid, SIGINT);
 }
 void handleSigterm(int sig)
 {
@@ -158,6 +75,10 @@ void handleSigterm(int sig)
     }
     else if (getpid() == authRequestManagerPid)
     {
+        pthread_cancel(receiverThread);
+        pthread_cancel(senderThread);
+        pthread_join(receiverThread, NULL);
+        pthread_join(senderThread, NULL);
         // if it is authRequestManager
         // wait for all auth engines to finish and receiver and sender threads
         sem_wait(shmSem);
@@ -185,32 +106,34 @@ void handleSigterm(int sig)
             }
         }
         sem_post(shmSem);
-        printf("posdjfsikfjsr\n");
         // printf("Now, canceling threads\n");
-        pthread_cancel(receiverThread);
-        pthread_join(receiverThread, NULL);
-        pthread_cancel(senderThread);
-        pthread_join(senderThread, NULL);
-        printf("Somebody\n");
 
         // print all the tasks that were left on the queues
-        // for (int i = 0; i < queue_pos; i++)
-        // {
-        //     if (video_streaming_queue[i].isMessageHere == 1)
-        //     {
-        //         char messageToSend[256];
-        //         sprintf(messageToSend, "IN VIDEO_QUEUE[%d]: %s %d ", i, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
-        //         writeToLog(messageToSend);
-        //     }
-        //     if (others_services_queue[i].isMessageHere == 1)
-        //     {
-        //         char messageToSend[256];
-        //         sprintf(messageToSend, "IN OTHERS QUEUE[%d]: %s %d ", i, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
-        //         writeToLog(messageToSend);
-        //     }
-        // }
+        for (int i = 0; i < queue_pos; i++)
+        {
+#ifdef DEBUG
+            printf("Video %d\n", i);
+#endif
+            if (video_streaming_queue[i].isMessageHere == 1)
+            {
+                char messageToSend[256];
+                sprintf(messageToSend, "IN VIDEO_QUEUE[%d]: %s %d ", i, video_streaming_queue[i].category, video_streaming_queue[i].dataToReserve);
+                writeToLog(messageToSend);
+            }
+        }
+        for (int i = 0; i < queue_pos; i++)
+        {
+#ifdef DEBUG
+            printf("Others %d\n", i);
+#endif
+            if (others_services_queue[i].isMessageHere == 1)
+            {
+                char messageToSend[256];
+                sprintf(messageToSend, "IN OTHERS_QUEUE[%d]: %s %d ", i, others_services_queue[i].category, others_services_queue[i].dataToReserve);
+                writeToLog(messageToSend);
+            }
+        }
         writeToLog("AUTHORIZATION REQUESTS MANAGER CLOSING");
-        printf("Ekmfvldfmvmfdvfd\n");
         exit(0);
     }
     else
@@ -223,13 +146,24 @@ void handleSigterm(int sig)
 void handleSigInt(int sig)
 {
     writeToLog("Signal SIGINT received");
-    kill(authRequestManagerPid, SIGTERM);
-    waitpid(authRequestManagerPid, NULL, 0);
-    printf("TESTE\n");
-    kill(monitorEnginePid, SIGTERM);
-    waitpid(monitorEnginePid, NULL, 0);
-    printf("TESTE1\n");
-
+    if (pid1 != -1)
+    {
+        kill(authRequestManagerPid, SIGTERM);
+        waitpid(authRequestManagerPid, NULL, 0);
+    }
+    else
+    {
+        printf("AuthRequestManagerPid is %d\n", pid1);
+    }
+    if (pid2 != -1)
+    {
+        kill(monitorEnginePid, SIGTERM);
+        waitpid(monitorEnginePid, NULL, 0);
+    }
+    else
+    {
+        printf("Monitorpid is %d\n", pid1);
+    }
     if (configFile != NULL)
     {
         fclose(configFile);
@@ -237,42 +171,68 @@ void handleSigInt(int sig)
     // Threads
 
     // Shared Memory
-    shmdt(shm);
-    shmctl(shmid, IPC_RMID, NULL);
-
-    // Authorization Engine pipes
-    for (int i = 0; i < auth_servers_max; i++)
+    // if shm is not null
+    if (shm != NULL)
     {
-
-        close(authEnginePipes[i][0]);
-        close(authEnginePipes[i][1]);
+        shmdt(shm);
+        shmctl(shmid, IPC_RMID, NULL);
     }
+    // Authorization Engine pipes
+    // if they are not null
+    if (authEnginePipes != NULL)
+    {
+        for (int i = 0; i < auth_servers_max + 1; i++)
+        {
 
-    free(authEnginePipes);
+            close(authEnginePipes[i][0]);
+            close(authEnginePipes[i][1]);
+        }
 
+        free(authEnginePipes);
+    }
     writeToLog("5G_AUTH_PLATFORM SIMULATOR CLOSING");
     // Semaphores
-    sem_close(logSem);
-    sem_close(shmSem);
-    sem_close(authEngineAvailableSem);
-    sem_close(shmChangesSem);
-    sem_close(extraAuthEngineSem);
-    sem_unlink("LOG_SEM");
-    sem_unlink("SHM_SEM");
-    sem_unlink("AUTH_ENGINE_SEM");
-    sem_unlink("SHM_CHANGES_SEM");
-    sem_unlink("EXTRA_AUTH_ENGINE_SEM");
+    // if the sems are not null
+    if (logSem != NULL)
+    {
+        sem_close(logSem);
+        sem_unlink("LOG_SEM");
+    }
+    if (shmSem != NULL)
+    {
+        sem_close(shmSem);
+        sem_unlink("SHM_SEM");
+    }
+    if (authEngineAvailableSem != NULL)
+    {
+        sem_close(authEngineAvailableSem);
+        sem_unlink("AUTH_ENGINE_SEM");
+    }
+    if (shmChangesSem != NULL)
+    {
+        sem_close(shmChangesSem);
+        sem_unlink("SHM_CHANGES_SEM");
+    }
+    if (extraAuthEngineSem != NULL)
+    {
+        sem_close(extraAuthEngineSem);
+        sem_unlink("EXTRA_AUTH_ENGINE_SEM");
+    }
+
+    sem_destroy(&queuesEmpty);
+
     sem_destroy(&queuesEmpty);
     // Named Pipes
+
     close(fdUserPipe);
     unlink("USER_PIPE");
+
     close(fdBackPipe);
     unlink("BACK_PIPE");
+
     // Queues
     free(video_streaming_queue);
     free(others_services_queue);
-
-    printf("TESTE3\n");
 
     // free(others_services_queue);
     // Mutex
@@ -805,7 +765,7 @@ void *senderFunction()
                             char messageToSend[256];
                             sprintf(messageToSend, "[S]: BACKOFFICE ID %d EXPIRED", others_services_queue[i].userID);
                             writeToLog(messageToSend);
-                            video_streaming_queue[i].isMessageHere = 0;
+                            others_services_queue[i].isMessageHere = 0;
                             sem_post(authEngineAvailableSem);
                             sem_wait(shmSem);
                             shm->authEngines[index].available = 1;
@@ -1041,7 +1001,7 @@ void *receiverFunction()
                         printf("Added message from BackOffice to others services queue\n");
 #endif
                         char messageToSend[256];
-                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM BACKOFFICE USER TO OTHERS SERVICES QUEUE INDEX %d\n", i);
+                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM BACKOFFICE USER TO OTHERS SERVICES QUEUE INDEX %d", i);
                         writeToLog(messageToSend);
                         sem_post(&queuesEmpty);
                         break;
@@ -1050,7 +1010,7 @@ void *receiverFunction()
             }
             else
             {
-                writeToLog("ERROR: Received invalid message format from backoffice user\n");
+                writeToLog("ERROR: Received invalid message format from backoffice user");
             }
         }
         else
@@ -1075,13 +1035,13 @@ void *receiverFunction()
                 int user = userExists(newMessage->userID);
                 if (user == 0)
                 {
-                    writeToLog("Received message from unregistered mobile user\n");
+                    writeToLog("[R]: RECEIVED MESSAGE FROM UNREGISTERED USER, DISCARDING MESSAGE");
                     continue;
                 }
             }
             else
             {
-                writeToLog("ERROR: Received invalid message format from mobile user\n");
+                writeToLog("ERROR: Received invalid message format from mobile user");
             }
             time_t now = time(NULL);
             newMessage->timeOfRequest = now;
@@ -1100,7 +1060,7 @@ void *receiverFunction()
                         others_services_queue[i] = *newMessage;
                         others_services_queue[i].isMessageHere = 1;
                         char messageToSend[256];
-                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM MOBILE USER TO OTHERS SERVICES QUEUE INDEX %d\n", i);
+                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM MOBILE USER TO OTHERS SERVICES QUEUE INDEX %d", i);
                         writeToLog(messageToSend);
                         found = 1;
                         sem_post(&queuesEmpty);
@@ -1115,13 +1075,13 @@ void *receiverFunction()
                     if (count != 1)
                     {
                         char messageToSend[256];
-                        sprintf(messageToSend, "OTHERS QUEUE IS FULL DISCARDING MESSAGE: %s#%s#%s\n", tokens[0], tokens[1], tokens[2]);
+                        sprintf(messageToSend, "OTHERS QUEUE IS FULL DISCARDING MESSAGE: %s#%s#%s", tokens[0], tokens[1], tokens[2]);
                         writeToLog(messageToSend);
                     }
                     else
                     {
                         char messageToSend[256];
-                        sprintf(messageToSend, "OTHERS QUEUE IS FULL DISCARDIGN REGISTRATION MESSAGE: %s#%s\n", tokens[0], tokens[1]);
+                        sprintf(messageToSend, "OTHERS QUEUE IS FULL DISCARDIGN REGISTRATION MESSAGE: %s#%s", tokens[0], tokens[1]);
                         writeToLog(messageToSend);
                     }
                 }
@@ -1136,7 +1096,7 @@ void *receiverFunction()
                         video_streaming_queue[i] = *newMessage;
                         video_streaming_queue[i].isMessageHere = 1;
                         char messageToSend[256];
-                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM MOBILE USER TO VIDEO STREAMING QUEUE INDEX %d\n", i);
+                        sprintf(messageToSend, "[R]: ADDED MESSAGE FROM MOBILE USER TO VIDEO STREAMING QUEUE INDEX %d", i);
                         writeToLog(messageToSend);
                         found = 1;
                         sem_post(&queuesEmpty);
@@ -1148,7 +1108,7 @@ void *receiverFunction()
                 if (!found)
                 {
                     char messageToSend[256];
-                    sprintf(messageToSend, "[R]: VIDEO QUEUE IS FULL, DISCARDING MESSAGE: %s#%s#%s\n", tokens[0], tokens[1], tokens[2]);
+                    sprintf(messageToSend, "[R]: VIDEO QUEUE IS FULL, DISCARDING MESSAGE: %s#%s#%s", tokens[0], tokens[1], tokens[2]);
                     writeToLog(messageToSend);
                 }
             }
@@ -1340,11 +1300,21 @@ int main(int argc, char *argv[])
     shmctl(shmid, IPC_RMID, NULL);
 
     // Initialize the signal handler
-    struct sigaction ctrlc;
-    ctrlc.sa_handler = handleSigInt;
-    sigfillset(&ctrlc.sa_mask);
-    ctrlc.sa_flags = 0;
-    sigaction(SIGINT, &ctrlc, NULL);
+    struct sigaction sa;
+    sa.sa_handler = SIG_IGN;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    int signals[] = {SIGHUP, SIGQUIT, SIGILL, SIGTRAP, SIGABRT, SIGFPE, SIGSEGV, SIGPIPE, SIGALRM, SIGTERM, SIGUSR1, SIGUSR2, SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU};
+    int n = sizeof(signals) / sizeof(signals[0]);
+
+    for (int i = 0; i < n; i++)
+    {
+        sigaction(signals[i], &sa, NULL);
+    }
+
+    sa.sa_handler = handleSigInt;
+    sigaction(SIGINT, &sa, NULL);
 
     originalPid = getpid();
     //  Setup log file
@@ -1372,7 +1342,7 @@ int main(int argc, char *argv[])
     authEnginePipes = malloc(sizeof(*authEnginePipes) * auth_servers_max + 1);
     if (authEnginePipes == NULL)
     {
-        errorHandler("ERROR: Not possible to create Authorization Engine pipes\n");
+        errorHandler("ERROR: Not possible to create Authorization Engine pipes");
     }
 
     // Semaphore creation function
@@ -1382,10 +1352,10 @@ int main(int argc, char *argv[])
     // Create message queue
     messageQueueCreator();
     // Create Authorization Requests Manager
-    pid_t pid = fork();
-    if (pid == -1)
+    pid1 = fork();
+    if (pid1 == -1)
         errorHandler("ERROR: Not able to create Authorization Requests Manager");
-    if (pid == 0)
+    if (pid1 == 0)
     {
         authRequestManagerPid = getpid();
         signal(SIGINT, SIG_IGN);
@@ -1400,10 +1370,10 @@ int main(int argc, char *argv[])
     }
     // Create Monitor Engine
 
-    pid = fork();
-    if (pid == -1)
+    pid2 = fork();
+    if (pid2 == -1)
         errorHandler("ERROR: Not able to create Monitor Engine");
-    if (pid == 0) //&& getpid() != authManagerPid
+    if (pid2 == 0) //&& getpid() != authManagerPid
     {
         monitorEnginePid = getpid();
         signal(SIGINT, SIG_IGN);
