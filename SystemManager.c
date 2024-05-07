@@ -1,16 +1,7 @@
-// Funcionalidades deste ficheiro, system manager:
-// Lê e valida as informações no ficheiro de configurações
-// ● Cria os processos Authorization Requests Manager e Monitor Engine
-// ● Escreve no log file;
-//  Captura o sinal SIGINT para terminar o programa, libertando antes todos os recursos.
-/*O ficheiro de configurações deverá seguir a seguinte estrutura:
-MOBILE USERS (>=1) - número de Mobile Users que podem ser lançados
-QUEUE_POS(>=0) -
-AUTH_SERVERS_MAX  (>=1)
-AUTH_PROC_TIME -(>=0)
-MAX_VIDEO_WAIT -(>=1)
-MAX_OTHERS_WAIT(>=1)*/
 
+/*Guilherme Eufrásio Rodrigues - 2021218943
+Tiago Monteiro Dias - 2021219480*/
+//descomentar para debug
 // #define DEBUG
 
 #define _XOPEN_SOURCE 700

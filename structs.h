@@ -1,3 +1,6 @@
+/* Guilherme Eufrásio Rodrigues - 2021218943
+Tiago Monteiro Dias - 2021219480*/
+
 typedef struct user
 {
     int userID;
